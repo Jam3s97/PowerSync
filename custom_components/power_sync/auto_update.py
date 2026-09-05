@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.components.update import UpdateEntityFeature
@@ -299,17 +299,20 @@ async def async_run_power_sync_auto_update(
     hass: HomeAssistant,
     entry: ConfigEntry,
     last_run_store: Store,
+    *,
+    scheduled_date: date | None = None,
 ) -> None:
     """Install a pending PowerSync HACS update and restart Home Assistant."""
     entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
     now_local = dt_util.now()
+    run_date = scheduled_date or now_local.date()
     entry_data["auto_update_last_run"] = dt_util.utcnow().isoformat()
 
     # Persist before any heavy work so a reload mid-install (options change,
     # auto-detection, etc.) doesn't re-trigger the same day's run.
     try:
         await last_run_store.async_save(
-            {"last_run_date": now_local.date().isoformat()}
+            {"last_run_date": run_date.isoformat()}
         )
     except Exception as err:
         _LOGGER.warning(
@@ -352,7 +355,8 @@ async def async_setup_auto_update(
 
     The schedule fires once per local day, anywhere within a TRIGGER_WINDOW_HOURS
     window starting at the configured time, as long as it hasn't already run
-    that day. The "already ran today" flag is persisted to disk so that the
+    for that logical schedule slot. The "already ran today" flag is persisted
+    to disk so that the
     integration's own option-update reload (which destroys the in-memory
     listener and creates a fresh closure) cannot cause double-fires within a
     day, and equally cannot cause a same-day skip when reload happens during
@@ -398,31 +402,48 @@ async def async_setup_auto_update(
         except ValueError:
             hour, minute = parse_auto_update_time(DEFAULT_AUTO_UPDATE_TIME)
 
-        configured_min = hour * 60 + minute
-        current_min = now.hour * 60 + now.minute
+        today_scheduled_at = now.replace(
+            hour=hour,
+            minute=minute,
+            second=0,
+            microsecond=0,
+        )
+        if now < today_scheduled_at:
+            previous_scheduled_at = today_scheduled_at - timedelta(days=1)
+            if now < previous_scheduled_at + timedelta(
+                hours=TRIGGER_WINDOW_HOURS
+            ):
+                scheduled_at = previous_scheduled_at
+            else:
+                _record_check("before_window")
+                return
+        else:
+            scheduled_at = today_scheduled_at
 
-        if current_min < configured_min:
-            _record_check("before_window")
-            return
-        if current_min >= configured_min + TRIGGER_WINDOW_HOURS * 60:
+        if now >= scheduled_at + timedelta(hours=TRIGGER_WINDOW_HOURS):
             _record_check("past_window")
             return
-        if last_run_date == now.date():
+        if last_run_date == scheduled_at.date():
             _record_check("already_ran_today")
             return
 
-        last_run_date = now.date()
+        last_run_date = scheduled_at.date()
         _record_check("triggered")
         _LOGGER.info(
             "PowerSync auto-update: triggering install (configured=%02d:%02d, "
-            "current=%s, last_run_date now=%s)",
+            "current=%s, slot_date=%s)",
             hour,
             minute,
             now.strftime("%H:%M:%S"),
             last_run_date,
         )
         hass.async_create_task(
-            async_run_power_sync_auto_update(hass, entry, last_run_store),
+            async_run_power_sync_auto_update(
+                hass,
+                entry,
+                last_run_store,
+                scheduled_date=scheduled_at.date(),
+            ),
             name=f"{DOMAIN}_auto_update",
         )
 
