@@ -857,16 +857,22 @@ class SolarEdgeEnergyController:
         command = _normalize_option(str(saved.get("storage_command_mode") or ""))
         active_commands = {
             _normalize_option(alias)
-            for alias in (*_CHARGE_OPTIONS, *_DISCHARGE_OPTIONS)
+            for alias in (
+                *_CHARGE_OPTIONS,
+                *_DISCHARGE_OPTIONS,
+                # Native active modes extend beyond the force-selection aliases.
+                "Charge from Clipped Solar Power",
+                "Charge from Solar Power",
+                "Charge from Solar Power and Grid",
+                "Discharge to Maximize Export",
+                "Discharge to Minimize Import",
+            )
         }
         if command in active_commands:
             return True
 
-        try:
-            timeout = float(saved.get("command_timeout") or 0)
-        except (TypeError, ValueError):
-            timeout = 0
-        return timeout > 0
+        # A configured lease does not activate a benign storage command.
+        return False
 
     async def set_backup_reserve(self, percent: int) -> bool:
         """Set SolarEdge backup reserve / minimum SOC when exposed by HA."""
