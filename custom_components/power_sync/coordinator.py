@@ -59,6 +59,10 @@ from .const import (
     SIGENERGY_CHARGER_EVDC,
 )
 from .sensitive_logging import obfuscate_log_arg, obfuscate_vin_tokens
+from .demand_charge_config import (
+    normalize_demand_charge_billing_day,
+    normalize_demand_charge_days,
+)
 from .tesla_grid_control import async_set_tesla_grid_charging_confirmed
 from .tesla_ble_mapping import (
     TeslaBleMappingError,
@@ -4507,8 +4511,8 @@ class DemandChargeCoordinator(DataUpdateCoordinator):
         self.rate = rate
         self.start_time = start_time
         self.end_time = end_time
-        self.days = days
-        self.billing_day = billing_day
+        self.days = normalize_demand_charge_days(days)
+        self.billing_day = normalize_demand_charge_billing_day(billing_day)
         self.daily_supply_charge = daily_supply_charge
         self.monthly_supply_charge = monthly_supply_charge
 

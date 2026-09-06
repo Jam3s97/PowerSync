@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .const import DOMAIN, SERVICE_RESTORE_NORMAL
 
 _HANDOFF_ACTIVE = "_monitoring_handoff_active"
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_prepare_monitoring_handoff(hass: Any, entry: Any) -> None:
@@ -35,6 +37,25 @@ async def async_prepare_monitoring_handoff(hass: Any, entry: Any) -> None:
     }
 
     try:
+        has_service = getattr(hass.services, "has_service", None)
+        if callable(has_service) and not has_service(DOMAIN, SERVICE_RESTORE_NORMAL):
+            reserve_restore_pending = bool(
+                coordinator
+                and getattr(coordinator, "_pre_idle_backup_reserve", None) is not None
+                and getattr(coordinator, "battery_controller", None)
+            )
+            if active_before or reserve_restore_pending:
+                raise RuntimeError(
+                    "restore normal service unavailable while PowerSync control "
+                    "state still requires cleanup"
+                )
+            _LOGGER.warning(
+                "Restore normal service is unavailable; continuing the connection "
+                "handoff because the failed/unloaded entry has no active PowerSync "
+                "control state"
+            )
+            return
+
         await hass.services.async_call(
             DOMAIN,
             SERVICE_RESTORE_NORMAL,

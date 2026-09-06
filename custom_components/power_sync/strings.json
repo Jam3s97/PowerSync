@@ -89,8 +89,8 @@
           "flowpower_api_key": "Flow Power API key"
         },
         "data_description": {
-          "flow_power_plan_id": "Choose the exact written plan on your account. Existing ambiguous accounts remain Legacy / unclassified until explicitly changed.",
-          "flow_power_plan_region": "Choose the plan's published region. 4Free is available in SEQ, not automatically all of QLD.",
+          "flow_power_plan_id": "Choose the exact written plan on your account. Legacy / unclassified preserves saved settings; official plans use quota-aware terms from their effective date.",
+          "flow_power_plan_region": "Choose the plan's published region. This is separate from the NEM wholesale-price region; QLD1 is not automatically treated as SEQ.",
           "flow_power_state": "Your NEM region determines which wholesale price feed is used. Check your bill if unsure.",
           "network_tariff_combined": "Select the network tariff that matches your electricity bill.",
           "flow_power_base_rate": "The base energy rate from your Flow Power contract, before wholesale adjustments.",
@@ -898,7 +898,7 @@
           "amber_site_id": "If you have multiple Amber NMIs, select the one associated with this Powerwall.",
           "auto_sync_enabled": "When enabled, PowerSync uploads a new TOU tariff schedule to your battery every 5 minutes based on current Amber prices.",
           "amber_forecast_type": "Predicted is balanced. Low assumes cheaper prices (more aggressive charging). High assumes expensive prices (more conservative).",
-          "battery_curtailment_enabled": "Stop battery from exporting to grid when export earnings drop below the configured threshold. This is the main toggle -- must be enabled for any curtailment to work."
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle; it must be enabled for curtailment to work."
         },
         "submit": "Finish"
       },
@@ -954,8 +954,8 @@
           "ac_inverter_curtailment_enabled": "Enable separate AC-coupled inverter shutdown"
         },
         "data_description": {
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle -- it must be enabled for curtailment to work.",
-          "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) below the configured threshold. Do not enable this for the hybrid battery inverter already configured as the battery system."
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle; it must be enabled for curtailment to work.",
+          "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold. Do not enable this for the hybrid battery inverter already configured as the battery system."
         },
         "submit": "Next"
       },
@@ -2057,7 +2057,7 @@
           "update_amber_token": "Paste a new Amber API token to rotate it. Leave blank to keep your current token.",
           "auto_sync_enabled": "When enabled, PowerSync uploads a new TOU tariff schedule to your battery every 5 minutes based on current Amber prices.",
           "amber_forecast_type": "Predicted is balanced. Low assumes cheaper prices (more aggressive charging). High assumes expensive prices (more conservative).",
-          "battery_curtailment_enabled": "Stop battery from exporting to grid when export earnings drop below the configured threshold. This is the main toggle -- must be enabled for any curtailment to work.",
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle; it must be enabled for curtailment to work.",
           "spike_protection_enabled": "When Amber detects a price spike, artificially inflate buy prices to prevent your battery from charging from grid.",
           "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold. Do not enable this for the hybrid battery inverter already configured as the battery system.",
           "forecast_discrepancy_alert": "Send a mobile notification when Amber predicted and High (higher-price) forecasts diverge significantly. Indicates the forecast spread is large and conservative scheduling may be preferable.",
@@ -2093,8 +2093,8 @@
           "fp_amber_markup": "Amber comparison markup"
         },
         "data_description": {
-          "flow_power_plan_id": "Legacy / unclassified preserves your saved Happy Hour rate and end time. Official plans use quota-aware terms from their effective date.",
-          "flow_power_plan_region": "The plan region is separate from the NEM wholesale-price region; QLD1 is never silently treated as SEQ.",
+          "flow_power_plan_id": "Choose the exact written plan on your account. Legacy / unclassified preserves saved settings; official plans use quota-aware terms from their effective date.",
+          "flow_power_plan_region": "Choose the plan's published region. This is separate from the NEM wholesale-price region; QLD1 is not automatically treated as SEQ.",
           "flow_power_price_source": "Flow Power API uses your KWatch API key. AEMO Direct fetches wholesale prices from NEMWeb without an API key. Amber API uses your Amber Electric account.",
           "flow_power_export_rate": "Fixed export credit paid during Flow Power Happy Hour. Set this if Flow Power has applied a promo or account-specific feed-in rate.",
           "flow_power_happy_hour_end": "Select the Happy Hour end time stated on your Flow Power plan or fact sheet. This changes the Happy Hour window only; the separate Happy Hour export-rate setting remains unchanged.",
@@ -2415,8 +2415,8 @@
           "openweathermap_api_key": "OpenWeatherMap API key"
         },
         "data_description": {
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle -- it must be enabled for curtailment to work.",
-          "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) below the configured threshold. Do not enable this for the hybrid battery inverter already configured as the battery system.",
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle; it must be enabled for curtailment to work.",
+          "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold. Do not enable this for the hybrid battery inverter already configured as the battery system.",
           "curtailment_export_threshold_cents": "Curtail when export earnings are below this value. Set 0 to curtail only at negative export earnings. A 0.2c/kWh release deadband prevents rapid switching.",
           "curtailment_control_in_monitoring_mode": "When explicitly enabled, automatic curtail and restore commands may run while Monitoring Mode continues to block every unrelated battery, EV, and inverter dispatch command. Curtailment can change solar output or inverter export settings.",
           "powerwall_offgrid_as_curtailment": "Allow PowerSync to temporarily island the Powerwall when export curtailment is needed but no AC inverter curtailment path is configured or available.",

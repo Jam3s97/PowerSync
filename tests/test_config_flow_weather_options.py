@@ -210,14 +210,19 @@ def test_flow_power_happy_hour_end_is_selected_in_setup_and_options():
         CONFIG_FLOW_PATH.read_text(),
         _options_flow_method("async_step_flow_power_options"),
     )
+    options_schema = ast.get_source_segment(
+        CONFIG_FLOW_PATH.read_text(),
+        _options_flow_method("_flow_power_options_schema"),
+    )
 
-    assert setup is not None and options is not None
-    for method_source in (setup, options):
+    assert setup is not None and options is not None and options_schema is not None
+    for method_source in (setup, options_schema):
         assert "CONF_FLOW_POWER_HAPPY_HOUR_END" in method_source
         assert "FLOW_POWER_HAPPY_HOUR_END_OPTIONS" in method_source
         assert "SelectSelector" in method_source
     assert "DEFAULT_FLOW_POWER_HAPPY_HOUR_END" in setup
-    assert "resolve_flow_power_happy_hour_end" in options
+    assert "resolve_flow_power_happy_hour_end" in options_schema
+    assert "self._flow_power_options_schema()" in options
 
 
 def test_fronius_gen24_storage_strings_are_generic():

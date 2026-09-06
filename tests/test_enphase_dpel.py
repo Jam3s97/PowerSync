@@ -208,6 +208,111 @@ def test_dpel_restore_uses_full_percentage_relay_config():
         restore_module()
 
 
+def test_installer_capacity_correction_replaces_stale_cached_derivation():
+    module, restore_module = _load_enphase_controller_module()
+    try:
+        controller = module.EnphaseController("192.0.2.10")
+        controller._installed_capacity_w = 6567.0
+
+        async def get_dpel_settings() -> dict:
+            return {"dynamic_pel_settings": {"installed_capacity": 7678}}
+
+        controller._get_dpel_settings = get_dpel_settings
+
+        assert asyncio.run(controller._get_installed_capacity_w()) == 7678.0
+        assert controller._installed_capacity_w == 7678.0
+    finally:
+        restore_module()
+
+
+def test_unavailable_dpel_read_never_reuses_stale_capacity():
+    module, restore_module = _load_enphase_controller_module()
+    try:
+        controller = module.EnphaseController("192.0.2.10")
+        controller._installed_capacity_w = 6567.0
+        inverter_reads = []
+
+        async def get_dpel_settings() -> None:
+            return None
+
+        async def get(endpoint: str):
+            inverter_reads.append(endpoint)
+            return [{"maxReportWatts": 6567}]
+
+        controller._get_dpel_settings = get_dpel_settings
+        controller._get = get
+
+        assert asyncio.run(controller._get_installed_capacity_w()) is None
+        assert inverter_reads == []
+    finally:
+        restore_module()
+
+
+def test_unavailable_capacity_read_strips_stale_cached_dpel_capacity():
+    module, restore_module = _load_enphase_controller_module()
+    try:
+        controller = module.EnphaseController("192.0.2.10")
+        controller._installed_capacity_w = 6567.0
+        payloads = []
+
+        async def get_dpel_settings() -> None:
+            return None
+
+        async def get_dpel_base_settings() -> dict:
+            return {
+                "enable": False,
+                "installed_capacity": 6567.0,
+                "installed_capacity_W": 6567.0,
+                "installedCapacity": 6567.0,
+            }
+
+        async def post(endpoint: str, payload: dict) -> tuple[bool, int]:
+            payloads.append(payload)
+            return True, 200
+
+        controller._get_dpel_settings = get_dpel_settings
+        controller._get_dpel_base_settings = get_dpel_base_settings
+        controller._post = post
+
+        assert asyncio.run(
+            controller._set_dpel(
+                enabled=True,
+                limit_watts=2000,
+                use_production_limit=True,
+            )
+        ) == (True, True)
+
+        settings = payloads[0]["dynamic_pel_settings"]
+        assert "installed_capacity" not in settings
+        assert "installed_capacity_W" not in settings
+        assert "installedCapacity" not in settings
+    finally:
+        restore_module()
+
+
+def test_missing_gateway_capacity_uses_microinverter_sum_fallback():
+    module, restore_module = _load_enphase_controller_module()
+    try:
+        controller = module.EnphaseController("192.0.2.10")
+
+        async def get_dpel_settings() -> dict:
+            return {"dynamic_pel_settings": {"enable": False}}
+
+        async def get(endpoint: str):
+            assert endpoint == controller.ENDPOINT_INVERTERS
+            return [
+                {"maxReportWatts": 3800},
+                {"maxReportWatts": 2767},
+            ]
+
+        controller._get_dpel_settings = get_dpel_settings
+        controller._get = get
+
+        assert asyncio.run(controller._get_installed_capacity_w()) == 6567.0
+    finally:
+        restore_module()
+
+
 def test_production_counters_stay_on_the_inverter_measurement_boundary():
     """#20: an EIM daily counter must not overwrite inverter lifetime data."""
     module, restore_module = _load_enphase_controller_module()

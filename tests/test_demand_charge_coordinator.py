@@ -141,6 +141,49 @@ def test_peak_demand_tracks_only_billable_demand_window_samples(
     assert data["estimated_cost"] == pytest.approx(37.8)
 
 
+def test_float_billing_day_and_legacy_all_value_are_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    coordinator_module = _coordinator_module(monkeypatch)
+    demand = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=SimpleNamespace(data={"grid_power": 0.0}),
+        enabled=True,
+        days="all",
+        billing_day=1.0,
+    )
+
+    assert demand.days == "All Days"
+    assert demand.billing_day == 1
+    assert demand._billing_cycle_key(
+        datetime(2026, 9, 6, tzinfo=timezone.utc)
+    ) == "2026-09-01"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, 1),
+        (31.0, 31),
+        (32, 31),
+        ("bad", 1),
+    ],
+)
+def test_billing_day_is_clamped_and_malformed_values_fall_back(
+    monkeypatch: pytest.MonkeyPatch,
+    value,
+    expected,
+):
+    coordinator_module = _coordinator_module(monkeypatch)
+    demand = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=SimpleNamespace(data={"grid_power": 0.0}),
+        enabled=True,
+        billing_day=value,
+    )
+
+    assert demand.billing_day == expected
+
 def test_peak_demand_survives_same_cycle_reconstruction(
     monkeypatch: pytest.MonkeyPatch,
 ):

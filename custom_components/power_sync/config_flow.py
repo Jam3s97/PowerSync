@@ -39,6 +39,10 @@ from .history_migration import (
     preview_history_relink,
 )
 from .curtailment_config import normalize_curtailment_export_threshold_cents
+from .demand_charge_config import (
+    normalize_demand_charge_billing_day,
+    normalize_demand_charge_days,
+)
 from .monitoring import async_prepare_monitoring_handoff, finish_monitoring_handoff
 from .powerwall_host import normalize_powerwall_gateway_host
 from .tesla_ble_mapping import (
@@ -14348,8 +14352,21 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             return self._save_and_finish(self._amber_options)
 
         if user_input is not None:
-            # Store demand charge options
-            self._demand_options = user_input
+            # Home Assistant number selectors submit whole-number values as
+            # floats, while older releases persisted lower-case day aliases.
+            # Store only the canonical forms so a save can also repair legacy
+            # entries instead of carrying them into the next reload.
+            self._demand_options = dict(user_input)
+            self._demand_options[CONF_DEMAND_CHARGE_DAYS] = (
+                normalize_demand_charge_days(
+                    self._demand_options.get(CONF_DEMAND_CHARGE_DAYS)
+                )
+            )
+            self._demand_options[CONF_DEMAND_CHARGE_BILLING_DAY] = (
+                normalize_demand_charge_billing_day(
+                    self._demand_options.get(CONF_DEMAND_CHARGE_BILLING_DAY)
+                )
+            )
 
             # If entered from menu, save this section only and finish
             if getattr(self, "_from_menu", False):
@@ -14395,14 +14412,18 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
             vol.Optional(
                 CONF_DEMAND_CHARGE_DAYS,
-                default=self._get_option(CONF_DEMAND_CHARGE_DAYS, "All Days"),
+                default=normalize_demand_charge_days(
+                    self._get_option(CONF_DEMAND_CHARGE_DAYS, "All Days")
+                ),
             ): SelectSelector(SelectSelectorConfig(
                 options=demand_days_options,
                 mode=SelectSelectorMode.DROPDOWN,
             )),
             vol.Optional(
                 CONF_DEMAND_CHARGE_BILLING_DAY,
-                default=self._get_option(CONF_DEMAND_CHARGE_BILLING_DAY, 1),
+                default=normalize_demand_charge_billing_day(
+                    self._get_option(CONF_DEMAND_CHARGE_BILLING_DAY, 1)
+                ),
             ): NumberSelector(NumberSelectorConfig(
                 min=1, max=31, step=1, mode=NumberSelectorMode.BOX,
             )),
