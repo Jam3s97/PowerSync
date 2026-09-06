@@ -54,7 +54,9 @@ def _context(method, outcome):
     async def guarded(callback):
         return await callback(2000)
 
-    coordinator = SimpleNamespace(**{method: AsyncMock(side_effect=write)}, generation=7)
+    coordinator = SimpleNamespace(
+        **{method: AsyncMock(side_effect=write)}, generation=7, intent_generation=7
+    )
     data = {"solaredge_coordinator": coordinator}
     namespace = {
         "hass": SimpleNamespace(
@@ -68,6 +70,10 @@ def _context(method, outcome):
         "command_power_w": 2000,
         "force_charge_state": {"active": False},
         "force_discharge_state": {"active": False},
+        "self_consumption_state": {"active": False},
+        "hold_soc_state": {"active": False},
+        "_clear_self_consumption_state": Mock(),
+        "_clear_hold_soc_state": Mock(),
         "_restore_solaredge_curtailment_for_dispatch": AsyncMock(return_value=True),
         "_guarded_force_discharge_write": guarded,
         "_LOGGER": Mock(),
