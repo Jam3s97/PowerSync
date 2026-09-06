@@ -857,7 +857,16 @@ class SolarEdgeEnergyController:
         command = _normalize_option(str(saved.get("storage_command_mode") or ""))
         active_commands = {
             _normalize_option(alias)
-            for alias in (*_CHARGE_OPTIONS, *_DISCHARGE_OPTIONS)
+            for alias in (
+                *_CHARGE_OPTIONS,
+                *_DISCHARGE_OPTIONS,
+                # Native active modes extend beyond the force-selection aliases.
+                "Charge from Clipped Solar Power",
+                "Charge from Solar Power",
+                "Charge from Solar Power and Grid",
+                "Discharge to Maximize Export",
+                "Discharge to Minimize Import",
+            )
         }
         if command in active_commands:
             return True

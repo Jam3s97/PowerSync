@@ -1393,3 +1393,58 @@ def test_solaredge_benign_msc_timeout_is_not_active_dispatch():
         "command_timeout": "3600",
     }
     assert not controller._saved_control_state_contains_active_dispatch()
+
+
+@pytest.mark.parametrize("command", [
+    "Charge from Clipped Solar Power",
+    "Charge from Solar Power",
+    "Charge from Solar Power and Grid",
+    "Discharge to Maximize Export",
+    "Discharge to Minimize Import",
+])
+@pytest.mark.parametrize("timeout", [0, 5400])
+def test_native_active_baseline_is_not_reapplied_after_force_charge(command, timeout):
+    hass = _SEHass()
+    command_state = hass.states.get("select.solaredge_storage_command_mode")
+    command_state.attributes["options"] = [
+        "Stop", "Charge from Solar Power and Grid", command,
+        "Maximize Self Consumption", "Solar Power Only (Off)",
+    ]
+    command_state.state = command
+    hass.states.get("select.solaredge_storage_control_mode").state = "Remote Control"
+    hass.states.get("number.solaredge_storage_discharge_limit").state = "4200"
+    hass.states.get("number.solaredge_storage_command_timeout").state = str(timeout)
+    controller = SolarEdgeEnergyController(hass, entity_prefix="solaredge")
+
+    assert asyncio.run(controller.connect())
+    assert asyncio.run(controller.force_charge(15, 2000))
+    assert controller._saved_control_state["storage_command_mode"] == command
+    hass.services.calls.clear()
+
+    assert asyncio.run(controller.restore_normal())
+    assert command_state.state == "Stop"
+    assert hass.states.get("select.solaredge_storage_control_mode").state == "Maximize Self Consumption"
+    assert float(hass.states.get("number.solaredge_storage_command_timeout").state) == 0
+    assert not any(data.get("option") == command for _, _, data in hass.services.calls)
+
+
+@pytest.mark.parametrize("command", ["Maximize Self Consumption", "Solar Power Only (Off)"])
+def test_native_benign_baseline_round_trip_preserves_nonzero_timeout(command):
+    hass = _SEHass()
+    command_state = hass.states.get("select.solaredge_storage_command_mode")
+    command_state.attributes["options"] = [command, "Charge from Solar Power and Grid", "Stop"]
+    command_state.state = command
+    hass.states.get("select.solaredge_storage_control_mode").state = "Remote Control"
+    for field in ("charge_limit", "discharge_limit"):
+        hass.states.get(f"number.solaredge_storage_{field}").state = "4200"
+    hass.states.get("number.solaredge_storage_command_timeout").state = "3600"
+    controller = SolarEdgeEnergyController(hass, entity_prefix="solaredge")
+
+    assert asyncio.run(controller.connect())
+    assert asyncio.run(controller.force_charge(15, 2000))
+    assert asyncio.run(controller.restore_normal())
+    assert command_state.state == command
+    assert hass.states.get("select.solaredge_storage_control_mode").state == "Remote Control"
+    for field in ("charge_limit", "discharge_limit"):
+        assert float(hass.states.get(f"number.solaredge_storage_{field}").state) == 4200
+    assert float(hass.states.get("number.solaredge_storage_command_timeout").state) == 3600
