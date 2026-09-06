@@ -4355,7 +4355,7 @@ def test_goodwe_hold_cleanup_waits_for_success_and_bypasses_monitoring_gate():
     assert ast.literal_eval(hold_payload["_force_restore"]) is True
     assert isinstance(hold_payload["_solaredge_generation"], ast.Name)
     assert hold_payload["_solaredge_generation"].id == "solaredge_generation"
-    assert 'solaredge_generation = coord.generation if brand == "solaredge" else None' in hold
+    assert 'solaredge_generation = coord.intent_generation if brand == "solaredge" else None' in hold
     assert cleanup_payload in persisted
     assert 'source in ("user", "manual", "unknown", "hold_soc_cleanup")' in restore
 

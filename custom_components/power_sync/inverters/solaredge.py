@@ -661,6 +661,7 @@ class _ControlSession:
         self.owned = {}
         self.last_mutation = None
         self.generation = 0
+        self.intent_generation = 0
         self.loaded = False
         self.store = None
         self.interrupted_at = None
@@ -932,6 +933,11 @@ class SolarEdgeEnergyController:
     def generation(self) -> int:
         return self._coordinator().generation
 
+    @property
+    def intent_generation(self) -> int:
+        """Identify the latest dispatch or restore independently of other writes."""
+        return self._coordinator().intent_generation
+
     def _create_store(self, identity):
         from homeassistant.helpers.storage import Store
 
@@ -954,11 +960,15 @@ class SolarEdgeEnergyController:
                     or not isinstance(record.get("owned", {}), dict)
                     or not isinstance(record.get("baseline") or {}, dict)
                     or not isinstance(record.get("generation", 0), int)
+                    or not isinstance(record.get("intent_generation", 0), int)
                 ):
                     raise ValueError("Invalid SolarEdge control journal")
                 session.baseline = record.get("baseline")
                 session.owned = record.get("owned", {})
                 session.generation = record.get("generation", 0)
+                session.intent_generation = record.get(
+                    "intent_generation", session.generation
+                )
                 session.last_mutation = record.get("last_mutation")
                 session.pending_mutation = record.get("pending_mutation")
                 if record.get("in_progress") and session.pending_mutation:
@@ -990,6 +1000,7 @@ class SolarEdgeEnergyController:
                 "baseline": session.baseline,
                 "owned": session.owned,
                 "generation": session.generation,
+                "intent_generation": session.intent_generation,
                 "health": session.health,
                 "last_mutation": session.last_mutation,
                 "pending_mutation": session.pending_mutation,
@@ -1063,7 +1074,7 @@ class SolarEdgeEnergyController:
                 return False
             if (
                 expected_generation is not None
-                and expected_generation != session.generation
+                and expected_generation != session.intent_generation
             ):
                 return self._result(
                     session,
@@ -1134,6 +1145,10 @@ class SolarEdgeEnergyController:
                 )
             session.baseline = baseline or None
             session.generation += 1
+            if operation in {
+                "force_charge", "force_discharge", "restore_normal", "set_backup_mode"
+            }:
+                session.intent_generation = session.generation
             original_owned = dict(session.owned)
             current_entity = None
             current_value = None
@@ -1613,6 +1628,7 @@ class SolarEdgeEnergyController:
             session.owned, session.baseline = {}, None
             session.health = "ready"
             session.generation += 1
+            session.intent_generation = session.generation
             self._result(
                 session,
                 SolarEdgeMutationOutcome.CONFIRMED,

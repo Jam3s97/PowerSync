@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import ast
+import asyncio
+import copy
+import logging
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,13 +81,62 @@ def test_solaredge_extended_restore_carries_successful_command_generation():
     source = COORDINATOR_PATH.read_text()
     execute = _method_source(source, "_execute_optimizer_action")
 
-    capture = execute.index('getattr(self.energy_coordinator, "generation", None)')
+    capture = execute.index('getattr(self.energy_coordinator, "intent_generation", None)')
     timer = execute.index("async def _auto_restore_extended")
     service_call = execute.index('"_solaredge_generation": (')
 
     assert capture < timer < service_call
     assert '"source": "optimizer"' in execute[timer:service_call]
     assert "solaredge_restore_generation" in execute[service_call:]
+
+
+def test_extended_expiry_uses_dispatch_ownership_after_unrelated_reserve_write():
+    method = _find_method(
+        ast.parse(COORDINATOR_PATH.read_text()),
+        "OptimizationCoordinator", "_execute_optimizer_action",
+    )
+    capture = next(
+        node for node in ast.walk(method)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "solaredge_restore_generation" for target in node.targets)
+    )
+    timer = next(node for node in ast.walk(method) if isinstance(node, ast.AsyncFunctionDef) and node.name == "_auto_restore_extended")
+
+    class InlineDomain(ast.NodeTransformer):
+        def visit_ImportFrom(self, node):
+            if node.module == "const" and any(alias.name == "DOMAIN" for alias in node.names):
+                return None
+            return node
+
+    timer = InlineDomain().visit(copy.deepcopy(timer))
+    wrapper = ast.parse("async def prepare(self): pass").body[0]
+    wrapper.body = [copy.deepcopy(capture), timer, ast.Return(ast.Name(timer.name, ast.Load()))]
+    expiry = datetime(2026, 9, 6, tzinfo=timezone.utc)
+    namespace = {
+        "_ext_state": {"active": True, "expires_at": expiry},
+        "_LOGGER": logging.getLogger(__name__),
+        "_SVC_DOMAIN": "power_sync",
+        "force_type": "discharge",
+    }
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[])), str(COORDINATOR_PATH), "exec"), namespace)  # noqa: S102 - Execute the repository's expiry callback.
+    calls = []
+
+    async def call(domain, service, data, *, blocking):
+        calls.append((domain, service, data, blocking))
+
+    energy = SimpleNamespace(generation=2, intent_generation=1)
+    coordinator = SimpleNamespace(
+        energy_coordinator=energy, battery_system="solaredge",
+        hass=SimpleNamespace(services=SimpleNamespace(async_call=call)),
+        _as_utc_datetime=lambda value: value,
+    )
+    callback = asyncio.run(namespace["prepare"](coordinator))
+    energy.generation += 1
+    asyncio.run(callback(expiry))
+    assert calls == [("power_sync", "restore_normal", {
+        "source": "optimizer", "_allow_monitoring_restore": True,
+        "_solaredge_generation": 1,
+    }, True)]
 
 
 def test_solaredge_failed_force_commands_do_not_advance_action_or_timer_state():
@@ -93,7 +147,7 @@ def test_solaredge_failed_force_commands_do_not_advance_action_or_timer_state():
         '"Optimizer: SolarEdge force-discharge "'
     )
     generation_capture = execute.index(
-        'getattr(self.energy_coordinator, "generation", None)'
+        'getattr(self.energy_coordinator, "intent_generation", None)'
     )
     main_failure = execute.index(
         '"Optimizer: SolarEdge force-discharge command was "'

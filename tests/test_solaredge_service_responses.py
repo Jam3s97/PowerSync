@@ -54,7 +54,9 @@ def _context(method, outcome):
     async def guarded(callback):
         return await callback(2000)
 
-    coordinator = SimpleNamespace(**{method: AsyncMock(side_effect=write)}, generation=7)
+    coordinator = SimpleNamespace(
+        **{method: AsyncMock(side_effect=write)}, generation=7, intent_generation=7
+    )
     data = {"solaredge_coordinator": coordinator}
     namespace = {
         "hass": SimpleNamespace(

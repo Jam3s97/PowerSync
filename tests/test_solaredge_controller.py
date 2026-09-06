@@ -2153,3 +2153,115 @@ def test_solaredge_missing_owned_optional_readback_rejects_further_writes():
     assert not asyncio.run(controller.force_discharge(15, 500))
     assert len(hass.services.calls) == calls
     assert controller.last_mutation["outcome"] == "rejected"
+
+
+@pytest.mark.parametrize("direction", ["charge", "discharge"])
+def test_solaredge_reserve_edit_keeps_force_expiry_owned(direction):
+    async def scenario():
+        hass = _SEHass()
+        controller = SolarEdgeEnergyController(hass, entity_prefix="solaredge")
+        assert await getattr(controller, "force_" + direction)(15, 2000)
+        owner = controller.generation
+        assert await controller.set_backup_reserve(20)
+        assert controller.generation == owner + 1
+        assert controller.intent_generation == owner
+        assert controller._coordinator().store.data["intent_generation"] == owner
+        assert await controller.restore_normal(expected_generation=owner)
+        assert hass.states.get("select.solaredge_storage_command_mode").state == "Stop"
+        assert controller._coordinator().owned == {}
+        assert controller._coordinator().store.data["generation"] == owner + 2
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("direction", ["charge", "discharge"])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_solaredge_failed_reserve_edit_blocks_force_expiry(direction, cancel):
+    async def scenario():
+        hass = _SEHass()
+        controller = SolarEdgeEnergyController(hass, entity_prefix="solaredge")
+        assert await getattr(controller, "force_" + direction)(15, 2000)
+        owner = controller.generation
+        service = hass.services.async_call
+
+        async def fail(domain, action, data, blocking=False):
+            await service(domain, action, data, blocking)
+            if cancel:
+                raise asyncio.CancelledError()
+            raise TimeoutError("reserve acknowledgement lost")
+
+        hass.services.async_call = fail
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await controller.set_backup_reserve(20)
+        else:
+            assert not await controller.set_backup_reserve(20)
+        count = len(hass.services.calls)
+        assert not await controller.restore_normal(expected_generation=owner)
+        assert len(hass.services.calls) == count
+        assert controller.control_health == "reconciliation_required"
+        assert controller.last_mutation["outcome"] == "unknown"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("direction", ["charge", "discharge"])
+def test_solaredge_repeated_force_after_reserve_supersedes_expiry(direction):
+    async def scenario():
+        hass = _SEHass()
+        controller = SolarEdgeEnergyController(hass, entity_prefix="solaredge")
+        force = getattr(controller, "force_" + direction)
+        assert await force(15, 2000)
+        owner = controller.generation
+        assert await controller.set_backup_reserve(20)
+        assert await force(30, 3000)
+        replacement = controller.generation
+        count = len(hass.services.calls)
+        assert not await controller.restore_normal(expected_generation=owner)
+        assert len(hass.services.calls) == count
+        assert await controller.restore_normal(expected_generation=replacement)
+
+    asyncio.run(scenario())
+
+
+def test_solaredge_restored_intent_survives_reserve_but_not_new_force():
+    async def scenario():
+        hass = _SEHass()
+        controller = SolarEdgeEnergyController(hass, entity_prefix="solaredge")
+        assert await controller.restore_normal()
+        owner = controller.intent_generation
+        assert await controller.set_backup_reserve(20)
+        assert await controller.restore_normal(expected_generation=owner)
+        owner = controller.intent_generation
+        assert await controller.force_charge(15, 2000)
+        count = len(hass.services.calls)
+        assert not await controller.restore_normal(expected_generation=owner)
+        assert len(hass.services.calls) == count
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("legacy_journal", [False, True])
+def test_solaredge_intent_journal_reload_does_not_resume_dispatch(legacy_journal):
+    async def scenario():
+        hass = _SEHass()
+        controller = SolarEdgeEnergyController(hass, entity_prefix="solaredge")
+        assert await controller.force_discharge(15, 2000)
+        owner = controller.intent_generation
+        assert await controller.set_backup_reserve(20)
+        store = controller._coordinator().store
+        operation = controller.generation
+        if legacy_journal:
+            store.data.pop("intent_generation")
+        hass._powersync_solaredge_controls.clear()
+        restarted = SolarEdgeEnergyController(hass, entity_prefix="solaredge")
+        restarted._create_store = lambda identity: store
+        assert await restarted.connect()
+        assert restarted.generation == operation
+        assert restarted.intent_generation == (operation if legacy_journal else owner)
+        assert restarted.control_health == "reconciliation_required"
+        writes = len(hass.services.calls)
+        assert not await restarted.restore_normal(expected_generation=owner)
+        assert len(hass.services.calls) == writes
+
+    asyncio.run(scenario())

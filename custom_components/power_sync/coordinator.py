@@ -10439,6 +10439,10 @@ class SolarEdgeEnergyCoordinator(
     def generation(self) -> int:
         return self._controller.generation
 
+    @property
+    def intent_generation(self) -> int:
+        return self._controller.intent_generation
+
     async def _control_result(self, operation) -> bool:
         """Publish control health even when the requested mutation fails."""
         try:

@@ -10596,7 +10596,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 return
 
                     solaredge_restore_generation = (
-                        getattr(self.energy_coordinator, "generation", None)
+                        getattr(self.energy_coordinator, "intent_generation", None)
                         if self.battery_system == "solaredge"
                         else None
                     )

@@ -32672,7 +32672,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if force_discharge_state.get("cancel_expiry_timer"):
                         force_discharge_state["cancel_expiry_timer"]()
 
-                    controller_generation = solaredge_coord.generation
+                    controller_generation = solaredge_coord.intent_generation
 
                     async def auto_restore_discharge_solaredge(_now):
                         if _command_generation[0] != _restore_gen:
@@ -34481,7 +34481,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if force_charge_state.get("cancel_expiry_timer"):
                         force_charge_state["cancel_expiry_timer"]()
 
-                    controller_generation = solaredge_coord.generation
+                    controller_generation = solaredge_coord.intent_generation
 
                     async def auto_restore_charge_solaredge(_now):
                         if _command_generation[0] != _restore_gen:
@@ -35260,7 +35260,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         if solaredge_restore_coordinator is not None:
             expected = call.data.get("_solaredge_generation")
-            if expected is not None and expected != solaredge_restore_coordinator.generation:
+            if expected is not None and expected != solaredge_restore_coordinator.intent_generation:
                 raise HomeAssistantError("SolarEdge restore timer was superseded")
             if solaredge_restore_coordinator.control_health != "ready":
                 raise HomeAssistantError("SolarEdge restore blocked pending supervised reconciliation")
@@ -36169,6 +36169,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 solaredge_coord = entry_data.get("solaredge_coordinator")
+                expired_self_consumption = None
+                if (
+                    source == "force_timer"
+                    and self_consumption_state.get("active")
+                    and self_consumption_state.get("expires_at") is not None
+                    and self_consumption_state["expires_at"] <= dt_util.utcnow()
+                ):
+                    expired_self_consumption = (
+                        self_consumption_state.get("engaged_at"),
+                        self_consumption_state["expires_at"],
+                    )
                 if not solaredge_coord or not bool(
                     await solaredge_coord.restore_normal(
                         automatic=source == "optimizer",
@@ -36187,6 +36198,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         _clear_self_consumption_state()
                     if hold_soc_state.get("active"):
                         _clear_hold_soc_state()
+                elif (
+                    expired_self_consumption is not None
+                    and self_consumption_state.get("active")
+                    and expired_self_consumption == (
+                        self_consumption_state.get("engaged_at"),
+                        self_consumption_state.get("expires_at"),
+                    )
+                ):
+                    # Release only the expired override confirmed by this restore.
+                    _clear_self_consumption_state()
 
                 force_charge_state["active"] = False
                 force_discharge_state["active"] = False
@@ -37130,7 +37151,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hold_soc_state["locked_soc"] = locked_soc
             hold_soc_state["brand"] = brand
             hold_soc_state["pending"] = pending
-            solaredge_generation = coord.generation if brand == "solaredge" else None
+            solaredge_generation = coord.intent_generation if brand == "solaredge" else None
             restore_generation = _command_generation[0]
             restore_reserve_generation = _tesla_reserve_generation[0]
 
@@ -37540,7 +37561,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             self_consumption_state["duration"] = duration
             self_consumption_state["source"] = source
             _restore_gen_self = _command_generation[0]
-            solaredge_generation = solaredge_coord.generation if is_solaredge_sc else None
+            solaredge_generation = solaredge_coord.intent_generation if is_solaredge_sc else None
 
             async def auto_restore_self_consumption(_now):
                 if _command_generation[0] != _restore_gen_self:

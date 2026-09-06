@@ -282,6 +282,7 @@ def test_solaredge_restore_forwards_timer_generation_and_failure():
         "entry": SimpleNamespace(entry_id="entry"),
         "DOMAIN": "power_sync",
         "source": "force_timer",
+        "self_consumption_state": {"active": False},
         "HomeAssistantError": RuntimeError,
     }
     call = _load_node(node, namespace)
@@ -515,7 +516,7 @@ def test_solaredge_confirmed_manual_service_returns_response_dict(operation, sou
         )
     handler.body = branch.body
     coordinator = SimpleNamespace(
-        generation=3, **{operation: AsyncMock(return_value=True)}
+        generation=3, intent_generation=3, **{operation: AsyncMock(return_value=True)}
     )
 
     async def guarded(write):
@@ -553,3 +554,132 @@ def test_solaredge_confirmed_manual_service_returns_response_dict(operation, sou
     response = asyncio.run(call(SimpleNamespace(data={})))
     assert isinstance(response, dict)
     assert response["success"] is True
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "failure", "replacement", "unexpired", "superseded"]
+)
+def test_solaredge_self_consumption_expiry_releases_only_matching_override(outcome):
+    """Run the scheduled callback through restore and the optimizer state reader."""
+    from datetime import datetime, timedelta, timezone
+
+    now = [datetime(2026, 9, 6, tzinfo=timezone.utc)]
+    state = {"active": False}
+    generation = [0]
+    coordinator = SimpleNamespace(generation=3, intent_generation=3)
+    entry_data = {"solaredge_coordinator": coordinator}
+    timers = []
+    persisted = []
+    hold = {"active": False}
+    namespace = {
+        "hass": SimpleNamespace(data={"power_sync": {"entry": entry_data}}),
+        "entry": SimpleNamespace(entry_id="entry"),
+        "DOMAIN": "power_sync",
+        "SERVICE_RESTORE_NORMAL": "restore_normal",
+        "source": "user",
+        "duration": 15,
+        "user_owned_override": True,
+        "is_solaredge_sc": True,
+        "solaredge_coord": coordinator,
+        "self_consumption_state": state,
+        "hold_soc_state": hold,
+        "force_charge_state": {"active": False},
+        "force_discharge_state": {"active": False},
+        "_command_generation": generation,
+        "_cancel_all_force_timers": Mock(),
+        "dt_util": SimpleNamespace(utcnow=lambda: now[0]),
+        "timedelta": timedelta,
+        "_LOGGER": logging.getLogger(__name__),
+        "HomeAssistantError": RuntimeError,
+        "async_dispatcher_send": Mock(),
+        "async_track_point_in_utc_time": lambda hass, callback, when: timers.append(callback),
+        "_clear_hold_soc_state": Mock(),
+        "suppress_notification": True,
+        "_restore_superseded": lambda reason: generation[0] != restore_generation[0],
+    }
+
+    async def persist():
+        persisted.append(dict(state))
+
+    namespace["persist_force_mode_state"] = persist
+    _load_node(_setup_node("_clear_self_consumption_state"), namespace)
+    setup = _setup_node("handle_set_self_consumption")
+    setup.body = [next(
+        n for n in setup.body
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.Name)
+        and n.test.id == "user_owned_override"
+    )]
+    engage = _load_node(setup, namespace)
+    restore = _setup_node("handle_restore_normal")
+    restore.body = next(
+        n for n in restore.body
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.Name)
+        and n.test.id == "is_solaredge_local"
+    ).body
+    restore = _load_node(restore, namespace)
+    restore_generation = [0]
+
+    async def hardware_restore(**kwargs):
+        assert kwargs["expected_generation"] == coordinator.intent_generation
+        if outcome == "replacement":
+            generation[0] += 1
+            state.update(
+                active=True,
+                engaged_at=now[0],
+                expires_at=now[0] + timedelta(minutes=30),
+            )
+            hold["active"] = True
+        return outcome != "failure"
+
+    coordinator.restore_normal = AsyncMock(side_effect=hardware_restore)
+
+    async def service_call(domain, service, data, blocking):
+        assert domain == "power_sync" and service == "restore_normal" and blocking
+        namespace["source"] = data["source"]
+        restore_generation[0] = generation[0]
+        return await restore(SimpleNamespace(data=data))
+
+    namespace["hass"].services = SimpleNamespace(async_call=service_call)
+    optimizer_module = ast.parse(
+        (ROOT / "custom_components/power_sync/optimization/coordinator.py").read_text()
+    )
+    reader = next(
+        n for n in ast.walk(optimizer_module)
+        if isinstance(n, ast.FunctionDef) and n.name == "_get_active_force_state"
+    )
+    get_active = _load_node(reader, namespace)
+    optimizer = SimpleNamespace(_force_state_getter=lambda: state)
+
+    async def scenario():
+        await engage(SimpleNamespace(data={}))
+        assert get_active(optimizer)["active"] is True
+        original_state = dict(state)
+        if outcome != "unexpired":
+            now[0] += timedelta(minutes=15)
+        if outcome == "superseded":
+            generation[0] += 1
+        if outcome == "failure":
+            with pytest.raises(RuntimeError, match="did not confirm"):
+                await timers[0](now[0])
+        else:
+            await timers[0](now[0])
+        if outcome == "success":
+            assert state["active"] is False
+            assert state["expires_at"] is None
+            assert get_active(optimizer) == {"active": False}
+            assert persisted[-1]["active"] is False
+        else:
+            assert state["active"] is True
+            assert get_active(optimizer)["active"] is True
+            if outcome != "replacement":
+                assert state == original_state
+            else:
+                assert hold["active"] is True
+                assert state["expires_at"] == now[0] + timedelta(minutes=30)
+        namespace["_clear_hold_soc_state"].assert_not_called()
+        if outcome == "superseded":
+            coordinator.restore_normal.assert_not_awaited()
+
+    asyncio.run(scenario())
