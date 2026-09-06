@@ -22,6 +22,7 @@
 const OPTIMIZER_POWER_AXIS_EXPONENT = 0.7;
 const BATTERY_WINDOW_MERGE_GAP_MINUTES = 15;
 const CHART_TOOLTIP_EDGE_INSET_PX = 8;
+const AI_SUMMARY_CLIENT_TIMEOUT_MS = 35_000;
 
 // Chart tooltips are centred on their `left` (translate(-50%, ...)) and are
 // clipped by a container with overflow:hidden, so the clamp must use half the
@@ -3642,7 +3643,23 @@ class PowerSyncAIPlanExplanation extends HTMLElement {
     this._errorCode = null;
     this._render();
     try {
-      const response = await this._hass.callApi('POST', this._summaryPath(), { refresh: !!refresh });
+      let timeoutId;
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          const error = new Error('AI summary response timed out');
+          error.code = 'client_timeout';
+          reject(error);
+        }, AI_SUMMARY_CLIENT_TIMEOUT_MS);
+      });
+      let response;
+      try {
+        response = await Promise.race([
+          this._hass.callApi('POST', this._summaryPath(), { refresh: !!refresh }),
+          timeout,
+        ]);
+      } finally {
+        clearTimeout(timeoutId);
+      }
       if (requestToken !== this._requestToken) return;
       if (!response?.success || !response.summary || typeof response.summary !== 'object') {
         const invalidResponse = new Error('Invalid AI summary response');
@@ -3677,6 +3694,7 @@ class PowerSyncAIPlanExplanation extends HTMLElement {
       provider_auth_failed: 'The selected provider rejected the saved API key.',
       provider_rate_limited: 'The selected provider rate-limited this request. Try again later.',
       provider_timeout: 'The selected provider timed out. Try again later.',
+      client_timeout: 'PowerSync did not receive the explanation response in time. Try again.',
       provider_unavailable: 'The selected provider is currently unavailable.',
       invalid_provider_response: 'The provider returned an explanation PowerSync could not safely display.',
       request_failed: 'The explanation request failed. Try again.',
