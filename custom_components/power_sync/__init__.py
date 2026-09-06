@@ -32688,12 +32688,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_discharge_state["expires_at"],
                     )
                     await persist_force_mode_state()
+                    return {"success": True}
                 else:
                     force_discharge_state["active"] = False
                     _LOGGER.error("SolarEdge force discharge failed")
                     hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "SolarEdge command was not confirmed; check control health before retrying"))
                     raise HomeAssistantError("SolarEdge force discharge was not confirmed; check control health")
-                return {"success": True}
             except HomeAssistantError:
                 raise
             except Exception as e:
@@ -34497,12 +34497,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_charge_state["expires_at"],
                     )
                     await persist_force_mode_state()
+                    return {"success": True}
                 else:
                     force_charge_state["active"] = False
                     _LOGGER.error("SolarEdge force charge failed")
                     hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "SolarEdge command was not confirmed; check control health before retrying"))
                     raise HomeAssistantError("SolarEdge force charge was not confirmed; check control health")
-                return {"success": True}
             except HomeAssistantError:
                 raise
             except Exception as e:

@@ -119,7 +119,9 @@ class EnphaseController(InverterController):
         # Some Envoy firmware (observed on AU/NZ region) requires installed_capacity
         # in the DPEL POST payload — without it the gateway returns 400
         # "missing/incorrect installed_capacity" and the dynamic limit won't engage.
-        # Computed from sum(maxReportWatts) across all microinverters.
+        # Falls back to sum(maxReportWatts) only after a successful DPEL read
+        # confirms that the gateway omitted the field. The last resolved value
+        # is retained for diagnostics, but a fresh gateway read always wins.
         self._installed_capacity_w: Optional[float] = None
         self._der_available: Optional[bool] = None   # None = unknown, True = works, False = broken
         self._agf_available: Optional[bool] = None   # None = unknown, True = works, False = broken
@@ -944,17 +946,18 @@ class EnphaseController(InverterController):
         enable_dynamic_limiting=False, so the inverter keeps producing
         and the user thinks curtailment is broken.
 
-        Three resolution paths in order of preference:
-          1. Cached value from a previous resolve.
-          2. GET /ivp/ss/dpel — existing settings sometimes include the
-             value the gateway expects to see echoed back.
-          3. Sum maxReportWatts across all microinverters from
+        Two resolution paths in order of preference:
+          1. A fresh GET /ivp/ss/dpel — existing settings sometimes include
+             the value the gateway expects to see echoed back. A fresh read is
+             required so an installer correction is never overwritten by a
+             stale value cached by PowerSync.
+          2. When the DPEL endpoint responds but omits the field, sum
+             maxReportWatts across all microinverters from
              /api/v1/production/inverters.
         """
-        if self._installed_capacity_w is not None and self._installed_capacity_w > 0:
-            return self._installed_capacity_w
-
-        # Path 2: read what the gateway already has stored
+        # Read the gateway on every write. This setting can be changed in the
+        # Enphase installer UI while Home Assistant is running, so a cached or
+        # derived value must never outrank the gateway's current value.
         try:
             existing = await self._get_dpel_settings()
             if isinstance(existing, dict):
@@ -965,17 +968,36 @@ class EnphaseController(InverterController):
                         try:
                             cap = float(val)
                             if cap > 0:
+                                previous = self._installed_capacity_w
                                 self._installed_capacity_w = cap
-                                _LOGGER.info(
-                                    "Discovered installed_capacity from /ivp/ss/dpel: %sW", cap
-                                )
+                                if previous is not None and previous != cap:
+                                    _LOGGER.info(
+                                        "Refreshed installed_capacity from /ivp/ss/dpel: "
+                                        "%sW (replacing cached %sW)",
+                                        cap,
+                                        previous,
+                                    )
+                                else:
+                                    _LOGGER.info(
+                                        "Discovered installed_capacity from /ivp/ss/dpel: %sW",
+                                        cap,
+                                    )
                                 return cap
                         except (TypeError, ValueError):
                             pass
+            else:
+                _LOGGER.warning(
+                    "Could not read current installed_capacity from DPEL; "
+                    "refusing to reuse a cached or derived value that could "
+                    "overwrite an installer correction"
+                )
+                return None
         except Exception as err:
             _LOGGER.debug("DPEL settings read for capacity failed: %s", err)
+            return None
 
-        # Path 3: sum microinverter ratings
+        # The DPEL endpoint responded successfully but omitted capacity. Only
+        # in that confirmed-empty case is the microinverter sum a safe fallback.
         try:
             inverters = await self._get(self.ENDPOINT_INVERTERS)
             if isinstance(inverters, list) and inverters:
@@ -990,7 +1012,7 @@ class EnphaseController(InverterController):
                 if total > 0:
                     self._installed_capacity_w = total
                     _LOGGER.info(
-                        "Computed installed_capacity from %d microinverters: %sW",
+                        "Computed fallback installed_capacity from %d microinverters: %sW",
                         len(inverters), total,
                     )
                     return total
@@ -1063,6 +1085,16 @@ class EnphaseController(InverterController):
         base_settings = await self._get_dpel_base_settings()
         if base_settings:
             merged_settings = dict(base_settings)
+            # The cached base payload may predate an installer correction.
+            # Remove every known spelling before inserting only the freshly
+            # resolved value below; if the fresh read failed, capacity stays
+            # absent rather than silently reverting the gateway setting.
+            for capacity_key in (
+                "installed_capacity",
+                "installed_capacity_W",
+                "installedCapacity",
+            ):
+                merged_settings.pop(capacity_key, None)
             merged_settings.update({
                 "enable": enabled,
                 "export_limit": export_limit_flag,
@@ -1070,8 +1102,8 @@ class EnphaseController(InverterController):
                 "slew_rate": slew_rate,
                 "enable_dynamic_limiting": True,
             })
-            # Make sure installed_capacity is present and correct even if the
-            # gateway returned a missing/zero value.
+            # Make sure installed_capacity is present and current when the
+            # gateway returned it or explicitly confirmed it was absent.
             if installed_capacity_w is not None and installed_capacity_w > 0:
                 merged_settings["installed_capacity"] = float(installed_capacity_w)
             # Some Envoy firmware (observed on AU D8.3.x with IQ8 systems)

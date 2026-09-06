@@ -213,7 +213,8 @@ def test_solaredge_startup_does_not_replay_persisted_force():
     service.assert_not_awaited()
 
 
-def test_degraded_monitoring_handoff_performs_no_cleanup_writes():
+@pytest.mark.parametrize("service_available", [False, True])
+def test_degraded_monitoring_handoff_performs_no_cleanup_writes(service_available):
     path = ROOT / "custom_components" / "power_sync" / "monitoring.py"
     node = next(
         n
@@ -229,7 +230,9 @@ def test_degraded_monitoring_handoff_performs_no_cleanup_writes():
     }
     hass = SimpleNamespace(
         data={"power_sync": {"entry": data}},
-        services=SimpleNamespace(async_call=service),
+        services=SimpleNamespace(
+            async_call=service, has_service=lambda *_args: service_available
+        ),
     )
     namespace = {
         "DOMAIN": "power_sync",

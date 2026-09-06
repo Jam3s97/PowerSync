@@ -7,7 +7,7 @@ import enum
 import importlib
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 
@@ -83,6 +83,7 @@ _ha_helpers.storage = _ha_storage
 _ha_util = sys.modules.setdefault("homeassistant.util", types.ModuleType("homeassistant.util"))
 _ha_dt = sys.modules.setdefault("homeassistant.util.dt", types.ModuleType("homeassistant.util.dt"))
 _ha_dt.utcnow = lambda: datetime(2026, 5, 2, tzinfo=timezone.utc)
+_ha_dt.now = lambda: datetime(2026, 5, 2, tzinfo=timezone.utc)
 _ha_util.dt = _ha_dt
 
 _ps = types.ModuleType("power_sync")
@@ -142,6 +143,9 @@ class _Hass:
         self.states = _States(states)
         self.services = _Services()
         self.data = {}
+
+    def async_create_task(self, coro, *, name: str) -> None:
+        asyncio.run(coro)
 
 
 class _PrivateHacsRepository:
@@ -348,3 +352,162 @@ def test_scheduler_dispatches_state_refresh_for_already_ran_decision():
     entry_data = hass.data["power_sync"]["ticket-213"]
     assert entry_data["auto_update_last_check_decision"] == "already_ran_today"
     assert captured["signals"] == ["power_sync_ticket-213_auto_update_state"]
+
+
+def test_scheduler_keeps_late_evening_window_across_midnight():
+    captured: dict[str, object] = {}
+    runs: list[date] = []
+
+    class _Entry:
+        entry_id = "ticket-401"
+        data: dict = {}
+        options = {
+            "auto_update_enabled": True,
+            "auto_update_time": "23:00",
+        }
+
+    class _ScheduleStore:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def async_load(self):
+            return {"last_run_date": "2026-09-04"}
+
+    async def _record_run(_hass, _entry, _store, *, scheduled_date):
+        runs.append(scheduled_date)
+
+    original_store = auto_update.Store
+    original_tracker = auto_update.async_track_time_change
+    original_run = auto_update.async_run_power_sync_auto_update
+    auto_update.Store = _ScheduleStore
+    auto_update.async_track_time_change = (
+        lambda hass, callback, second=0: (
+            captured.update(callback=callback, second=second) or (lambda: None)
+        )
+    )
+    auto_update.async_run_power_sync_auto_update = _record_run
+    try:
+        hass = _Hass([])
+        asyncio.run(auto_update.async_setup_auto_update(hass, _Entry()))
+        callback = captured["callback"]
+        callback(datetime(2026, 9, 6, 0, 30))
+        assert hass.data["power_sync"]["ticket-401"][
+            "auto_update_last_check_decision"
+        ] == "triggered"
+        callback(datetime(2026, 9, 6, 23, 0))
+    finally:
+        auto_update.Store = original_store
+        auto_update.async_track_time_change = original_tracker
+        auto_update.async_run_power_sync_auto_update = original_run
+
+    assert runs == [date(2026, 9, 5), date(2026, 9, 6)]
+
+
+def test_scheduler_keeps_before_and_end_boundaries_for_late_evening_slot():
+    captured: dict[str, object] = {}
+
+    class _Entry:
+        entry_id = "ticket-401-boundaries"
+        data: dict = {}
+        options = {
+            "auto_update_enabled": True,
+            "auto_update_time": "23:00",
+        }
+
+    class _ScheduleStore:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def async_load(self):
+            return None
+
+    original_store = auto_update.Store
+    original_tracker = auto_update.async_track_time_change
+    auto_update.Store = _ScheduleStore
+    auto_update.async_track_time_change = (
+        lambda hass, callback, second=0: (
+            captured.update(callback=callback, second=second) or (lambda: None)
+        )
+    )
+    try:
+        hass = _Hass([])
+        asyncio.run(auto_update.async_setup_auto_update(hass, _Entry()))
+        callback = captured["callback"]
+        callback(datetime(2026, 9, 5, 22, 59))
+        assert hass.data["power_sync"]["ticket-401-boundaries"][
+            "auto_update_last_check_decision"
+        ] == "before_window"
+        callback(datetime(2026, 9, 6, 3, 0))
+        assert hass.data["power_sync"]["ticket-401-boundaries"][
+            "auto_update_last_check_decision"
+        ] == "before_window"
+    finally:
+        auto_update.Store = original_store
+        auto_update.async_track_time_change = original_tracker
+
+
+def test_scheduler_does_not_repeat_persisted_prior_evening_slot_after_midnight():
+    captured: dict[str, object] = {}
+
+    class _Entry:
+        entry_id = "ticket-401-persisted"
+        data: dict = {}
+        options = {
+            "auto_update_enabled": True,
+            "auto_update_time": "23:00",
+        }
+
+    class _ScheduleStore:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def async_load(self):
+            return {"last_run_date": "2026-09-05"}
+
+    original_store = auto_update.Store
+    original_tracker = auto_update.async_track_time_change
+    auto_update.Store = _ScheduleStore
+    auto_update.async_track_time_change = (
+        lambda hass, callback, second=0: (
+            captured.update(callback=callback, second=second) or (lambda: None)
+        )
+    )
+    try:
+        hass = _Hass([])
+        asyncio.run(auto_update.async_setup_auto_update(hass, _Entry()))
+        captured["callback"](datetime(2026, 9, 6, 0, 30))
+    finally:
+        auto_update.Store = original_store
+        auto_update.async_track_time_change = original_tracker
+
+    assert hass.data["power_sync"]["ticket-401-persisted"][
+        "auto_update_last_check_decision"
+    ] == "already_ran_today"
+
+
+def test_auto_update_runner_persists_logical_scheduled_date():
+    class _RunStore:
+        saved: dict | None = None
+
+        async def async_save(self, data):
+            self.saved = data
+
+    async def _no_update(_hass):
+        return None
+
+    original_install = auto_update.async_install_power_sync_update
+    auto_update.async_install_power_sync_update = _no_update
+    try:
+        store = _RunStore()
+        asyncio.run(
+            auto_update.async_run_power_sync_auto_update(
+                _Hass([]),
+                types.SimpleNamespace(entry_id="ticket-401"),
+                store,
+                scheduled_date=date(2026, 9, 5),
+            )
+        )
+    finally:
+        auto_update.async_install_power_sync_update = original_install
+
+    assert store.saved == {"last_run_date": "2026-09-05"}

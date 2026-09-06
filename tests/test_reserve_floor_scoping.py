@@ -245,6 +245,7 @@ def _install_power_sync_stubs() -> None:
     sys.modules["power_sync.const"] = const_module
 
     battery_module = types.ModuleType("power_sync.optimization.battery_optimizer")
+    battery_module.RTE_ECONOMIC_HOLD_REASON = "rte_economic_hold"
     battery_module.BatteryOptimizer = type("BatteryOptimizer", (), {})
     battery_module.OptimizerResult = type("OptimizerResult", (), {})
     sys.modules["power_sync.optimization.battery_optimizer"] = battery_module

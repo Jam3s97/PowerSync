@@ -12,6 +12,11 @@ ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "power_syn
 _ps = types.ModuleType("power_sync")
 _ps.__path__ = [str(ROOT)]
 sys.modules["power_sync"] = _ps
+# Collection imports other test modules first, and some install deliberately
+# partial const stubs. This test exercises the real standalone helper, so make
+# its import resolve the real const module regardless of collection order.
+sys.modules.pop("power_sync.const", None)
+sys.modules.pop("power_sync.curtailment_config", None)
 
 from power_sync.curtailment_config import (  # noqa: E402
     CURTAILMENT_HYSTERESIS_CENTS,
@@ -53,4 +58,3 @@ def test_options_override_legacy_data_and_invalid_values_fall_back():
     assert get_curtailment_price_thresholds(
         _entry(options={"curtailment_export_threshold_cents": "not-a-number"})
     ) == (1.0, 1.2)
-

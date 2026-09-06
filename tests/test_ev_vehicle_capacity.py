@@ -291,6 +291,12 @@ class _PriceForecaster:
 
 def _planner() -> ChargingPlanner:
     planner = object.__new__(ChargingPlanner)
+    planner.hass = SimpleNamespace(data={})
+    planner.config_entry = SimpleNamespace(
+        entry_id="entry-1",
+        options={},
+        data={},
+    )
     planner.surplus_forecaster = _SurplusForecaster()
     planner.price_forecaster = _PriceForecaster()
     planner._get_battery_schedule = None

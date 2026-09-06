@@ -228,6 +228,7 @@ def test_dashboard_ai_explanation_is_explicit_safe_and_plan_isolated():
     assert "item.window_id" not in card_source
     assert "toLocaleTimeString" in card_source
     assert "provider_auth_failed" in card_source
+    assert "client_timeout" in card_source
     assert "Showing the previous explanation." in card_source
     assert "Descriptive only. AI cannot change or execute the optimizer plan." in card_source
     decision_labels = [
@@ -242,6 +243,54 @@ def test_dashboard_ai_explanation_is_explicit_safe_and_plan_isolated():
     assert positions == sorted(positions)
     assert "setInterval" not in card_source
     assert "localStorage" not in card_source
+
+
+def test_dashboard_ai_explanation_client_timeout_exits_loading_and_preserves_refresh():
+    """A stalled HA response must not leave either action permanently loading."""
+    source = STRATEGY_PATH.read_text()
+    timeout = source[source.index("const AI_SUMMARY_CLIENT_TIMEOUT_MS"):].splitlines()[0]
+    start = source.index("class PowerSyncAIPlanExplanation extends HTMLElement")
+    end = source.index("if (!customElements.get('power-sync-ai-plan-explanation'))")
+    card_source = f"{timeout}\n{source[start:end]}"
+    runtime = f"""
+      global.HTMLElement = class {{
+        attachShadow() {{ this.shadowRoot = {{}}; }}
+      }};
+      global.setTimeout = callback => {{ queueMicrotask(callback); return 1; }};
+      global.clearTimeout = () => {{}};
+      {card_source}
+      const stalledHass = {{ callApi: () => new Promise(() => {{}}) }};
+      const makeCard = () => {{
+        const card = new PowerSyncAIPlanExplanation();
+        card._hass = stalledHass;
+        card._render = () => {{}};
+        return card;
+      }};
+      (async () => {{
+        const generate = makeCard();
+        generate._state = 'ready';
+        await generate._generate(false);
+        if (generate._state !== 'error' || generate._errorCode !== 'client_timeout') {{
+          throw new Error(`Generate stayed in ${{generate._state}} (${{generate._errorCode}})`);
+        }}
+
+        const refresh = makeCard();
+        refresh._state = 'content';
+        refresh._summary = {{ headline: 'Previous explanation' }};
+        refresh._meta = {{ cacheHit: true }};
+        await refresh._generate(true);
+        if (refresh._state !== 'content' || refresh._summary.headline !== 'Previous explanation'
+            || refresh._meta.refreshError !== 'client_timeout') {{
+          throw new Error('Refresh did not retain the prior explanation after client timeout');
+        }}
+      }})().catch(error => {{ console.error(error); process.exit(1); }});
+    """
+    subprocess.run(
+        ["node", "-e", runtime],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_lp_battery_power_chart_splits_home_consumption_from_export():

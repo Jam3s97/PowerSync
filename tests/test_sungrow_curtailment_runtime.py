@@ -731,7 +731,10 @@ def test_goodwe_curtailment_periodically_reapplies_export_limit():
 
     assert "_last_goodwe_curtailment_reapply" in handler
     assert "GoodWe curtailment RE-APPLY" in handler
-    assert 'current_state != "curtailed" or _needs_reapply' in handler
+    assert '_needs_reapply = current_state == "curtailed"' in handler
+    assert 'current_state not in {"curtailed", "pending"}' in handler
+    assert "or _needs_reapply" in handler
+    assert "or _pending_retry_due" in handler
     assert 'entry_data["_last_goodwe_curtailment_reapply"] = _now' in handler
     assert 'entry_data.pop("_last_goodwe_curtailment_reapply", None)' in handler
 
@@ -781,7 +784,8 @@ def test_goodwe_force_discharge_fails_closed_when_curtailment_restore_fails():
     assert "goodwe_curtailment_restore_result" in manual_branch
     assert "if not goodwe_curtailment_restore_result:" in manual_branch
     assert 'force_discharge_state["active"] = False' in manual_branch
-    assert "GoodWe force discharge blocked: curtailment restore was not confirmed" in manual_branch
+    assert '"GoodWe force discharge blocked: curtailment restore "' in manual_branch
+    assert '"was not confirmed"' in manual_branch
 
 
 def test_goodwe_curtailment_does_not_reapply_during_force_export():
