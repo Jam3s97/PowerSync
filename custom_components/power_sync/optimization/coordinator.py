@@ -1032,6 +1032,27 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return True
 
+        # FoxESS Backup mode already prevents self-consumption discharge.
+        # Raising persistent minimum SOC too can strand it at the held SOC
+        # after a restart loses the in-memory restore target. Preserve any
+        # pending legacy target, but do not create one for new mode-only holds.
+        if self.battery_system == "foxess":
+            if not self.energy_coordinator or not hasattr(
+                self.energy_coordinator, "set_backup_mode"
+            ):
+                _LOGGER.warning(
+                    "Optimizer: FoxESS IDLE Backup-mode control is unavailable"
+                )
+                return False
+            if await self.energy_coordinator.set_backup_mode() is not True:
+                return False
+            _LOGGER.info(
+                "Optimizer: IDLE — FoxESS Backup hold at %d%% SOC "
+                "(minimum SOC unchanged)",
+                soc_pct,
+            )
+            return True
+
         # Fronius IDLE already holds SOC with temporary 0 W PV-charge and
         # discharge limits. Raising the persistent minimum-SOC entity as well
         # is redundant and can strand the inverter at the current SOC after

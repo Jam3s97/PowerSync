@@ -8590,9 +8590,16 @@ def test_optimizer_owned_force_discharge_accepts_goodwe_sell_power_mode(opt_modu
 
 
 def test_optimizer_owned_force_charge_does_not_override_idle_with_lookahead_charge(opt_module):
+    hold_calls = []
+
+    async def set_backup_mode():
+        hold_calls.append(True)
+        return True
+
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
     coordinator.battery_system = "foxess"
+    coordinator.energy_coordinator = SimpleNamespace(set_backup_mode=set_backup_mode)
     start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
     current_time = {"now": start}
     opt_module.dt_util.utcnow = lambda *args, **kwargs: current_time["now"]
@@ -8628,6 +8635,8 @@ def test_optimizer_owned_force_charge_does_not_override_idle_with_lookahead_char
     assert battery.restore_normal_calls == 1
     assert coordinator._optimizer_force_state["active"] is False
     assert coordinator._last_executed_action == "idle"
+    assert hold_calls == [True]
+    assert battery.backup_reserve_calls == []
 
 
 def test_optimizer_owned_force_charge_clears_when_lp_really_stops_charging(opt_module):
@@ -8738,6 +8747,98 @@ def test_idle_to_self_consumption_exits_idle_immediately(opt_module):
     assert battery.backup_reserve_calls == [47, 20]
     assert coordinator._pre_idle_backup_reserve is None
     assert coordinator._last_executed_action == "self_consumption"
+
+
+@pytest.mark.parametrize("soc", [0.91, 0.22])
+def test_foxess_idle_preserves_minimum_soc_across_restart(opt_module, soc):
+    """A temporary hold must not leave its SOC in persistent FoxESS settings."""
+    class FoxESSEnergy:
+        def __init__(self):
+            self.mode = "Self Use"
+
+        async def set_backup_mode(self):
+            self.mode = "Back-up"
+            return True
+
+        async def restore_normal(self):
+            self.mode = "Self Use"
+            return True
+
+        async def restore_work_mode_from_idle(self):
+            return await self.restore_normal()
+
+    battery = _FakeBattery(backup_reserve=20)
+
+    async def write_reserve(percent):
+        battery.backup_reserve_calls.append(percent)
+        battery.backup_reserve = percent
+        return True
+
+    battery.set_backup_reserve = write_reserve
+    energy = FoxESSEnergy()
+    before = _execution_coordinator(opt_module, battery, soc=soc)
+    before.battery_system = "foxess"
+    before.energy_coordinator = energy
+    action = SimpleNamespace(action="idle", power_w=0, reason="rte_economic_hold")
+    asyncio.run(before._execute_optimizer_action(action))
+
+    assert energy.mode == "Back-up"
+    assert before._last_executed_action == "idle"
+    assert battery.backup_reserve == 20
+    assert battery.backup_reserve_calls == []
+
+    # Lose the old optimizer's in-memory restore markers as on a hard restart.
+    after = _execution_coordinator(opt_module, battery, soc=soc)
+    after.battery_system = "foxess"
+    after.energy_coordinator = energy
+    after._last_executed_action = None
+    battery.set_self_consumption_mode = energy.restore_normal
+    asyncio.run(after._execute_optimizer_action(
+        SimpleNamespace(action="self_consumption", power_w=0)
+    ))
+
+    assert energy.mode == "Self Use"
+    assert battery.backup_reserve == 20
+    assert battery.backup_reserve_calls == []
+
+
+@pytest.mark.parametrize("result", [False, None, "unavailable"])
+def test_foxess_idle_requires_hold_confirmation_without_reserve_fallback(opt_module, result):
+    async def set_backup_mode():
+        return result
+
+    battery = _FakeBattery(backup_reserve=20)
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.91)
+    coordinator.battery_system = "foxess"
+    coordinator.energy_coordinator = (
+        SimpleNamespace() if result == "unavailable"
+        else SimpleNamespace(set_backup_mode=set_backup_mode)
+    )
+
+    asyncio.run(coordinator._execute_optimizer_action(
+        SimpleNamespace(action="idle", power_w=0)
+    ))
+
+    assert battery.backup_reserve_calls == []
+    assert coordinator._pre_idle_backup_reserve is None
+    assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_foxess_new_hold_retains_pending_legacy_reserve_restore(opt_module):
+    async def set_backup_mode():
+        return True
+
+    battery = _FakeBattery(backup_reserve=91)
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.91)
+    coordinator.battery_system = "foxess"
+    coordinator.energy_coordinator = SimpleNamespace(set_backup_mode=set_backup_mode)
+    coordinator._pre_idle_backup_reserve = 20
+    coordinator._idle_hold_reserve = 91
+
+    assert asyncio.run(coordinator._set_idle_hold_mode(battery)) is True
+    assert battery.backup_reserve_calls == []
+    assert coordinator._pre_idle_backup_reserve == 20
+    assert coordinator._idle_hold_reserve == 91
 
 
 def test_foxess_idle_exit_restores_user_reserve_without_applying_optimizer_floor(opt_module):

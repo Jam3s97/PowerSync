@@ -1304,8 +1304,9 @@ class FoxESSController(InverterController):
         """Restore work mode to Self Use after IDLE Backup mode.
 
         Unlike restore_normal(), this only changes work mode and does not
-        touch remote control registers. The optimizer manages min_soc
-        separately via set_backup_reserve.
+        touch remote control registers. New optimizer holds leave min_soc
+        unchanged; the optimizer separately restores any pending reserve
+        target retained from a legacy hold.
         """
         if not self._register_map:
             return False
