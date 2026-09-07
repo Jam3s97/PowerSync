@@ -82,6 +82,8 @@ def minor_currency_unit(currency: str | None) -> str:
         return "p"
     if code == "EUR":
         return "ct"
+    if code == "SEK":
+        return "öre"
     return "c"
 
 

@@ -73,9 +73,11 @@ def test_currency_unit_helpers():
     assert selector_unit_for_provider("octopus", _hass("AUD"), "major_rate") == "GBP/kWh"
     assert minor_currency_unit("GBP") == "p"
     assert minor_currency_unit("EUR") == "ct"
+    assert minor_currency_unit("SEK") == "öre"
     assert minor_currency_unit("NZD") == "c"
     assert minor_price_unit("GBP") == "p/kWh"
     assert minor_price_unit("EUR") == "ct/kWh"
+    assert minor_price_unit("SEK") == "öre/kWh"
     assert minor_price_unit("AUD") == "c/kWh"
 
 

@@ -20941,7 +20941,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Check for EPEX Day-Ahead (EU) configuration
     has_epex = electricity_provider == "epex" and bool(
-        entry.data.get(CONF_EPEX_REGION)
+        _entry_value(CONF_EPEX_REGION)
     )
 
     # Check for custom tariff providers (Globird, AEMO VPP, etc.)
@@ -23066,10 +23066,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if has_epex:
         from .coordinator import EPEXPriceCoordinator
 
-        epex_region = entry.data.get(CONF_EPEX_REGION, "DE")
-        epex_surcharge = entry.data.get(CONF_EPEX_SURCHARGE, 0.0)
-        epex_tax_percent = entry.data.get(CONF_EPEX_TAX_PERCENT, 0.0)
-        epex_export_rate = entry.data.get(CONF_EPEX_EXPORT_RATE, 0.0)
+        epex_region = _entry_value(CONF_EPEX_REGION, "DE")
+        epex_surcharge = _entry_value(CONF_EPEX_SURCHARGE, 0.0)
+        epex_tax_percent = _entry_value(CONF_EPEX_TAX_PERCENT, 0.0)
+        epex_export_rate = _entry_value(CONF_EPEX_EXPORT_RATE, 0.0)
 
         epex_coordinator = EPEXPriceCoordinator(
             hass,
