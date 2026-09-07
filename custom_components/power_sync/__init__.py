@@ -41529,7 +41529,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "blocked by monitoring mode"
                 )
                 return
-            if not live_status or not live_status.get("load_power"):
+            if not live_status or live_status.get("load_power") is None:
+                if inverter_brand == "fronius":
+                    # The existing device limit may still be in effect, but
+                    # without a current site sample its physical result is
+                    # unknown rather than the prior convergence verdict.
+                    entry_data.pop("inverter_curtailment_physical_converged", None)
+                    entry_data.pop("inverter_curtailment_residual_export_w", None)
                 return
 
             home_load_w = int(live_status.get("load_power", 0))

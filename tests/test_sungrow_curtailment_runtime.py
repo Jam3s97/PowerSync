@@ -665,6 +665,14 @@ def test_fronius_initial_load_following_requires_a_fresh_load_target():
     assert "Skipping Fronius load-following limit because fresh" in source
 
 
+def test_fronius_missing_live_sample_marks_physical_effect_unknown():
+    source = _function_source("fast_load_following_update")
+
+    assert 'not live_status or live_status.get("load_power") is None' in source
+    assert 'entry_data.pop("inverter_curtailment_physical_converged", None)' in source
+    assert 'entry_data.pop("inverter_curtailment_residual_export_w", None)' in source
+
+
 def test_fronius_simple_mode_reapply_reports_no_device_limit():
     """Ticket #226: simple mode writes no limit, so none may be reported."""
     _result, status_calls, controller_calls, state_calls, replacement = (
