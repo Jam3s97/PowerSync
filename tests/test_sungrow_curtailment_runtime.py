@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import importlib.util
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import textwrap
 from types import SimpleNamespace
@@ -583,6 +584,85 @@ def test_fronius_matching_cached_target_reapplies_while_export_persists():
         "physical_converged": False,
         "residual_export_w": 600.0,
     }
+
+
+def _cached_fronius_live_status(
+    *,
+    last_update_success: bool = True,
+    telemetry_ready: bool = True,
+    updated_at: datetime | None = None,
+):
+    """Run the cached-status guard without loading Home Assistant."""
+    entry_id = "entry-id"
+    coordinator = SimpleNamespace(
+        data={
+            "telemetry_ready": telemetry_ready,
+            "load_power": 1.2,
+            "grid_power": -0.4,
+            "battery_power": 0.0,
+        },
+        last_update_success=last_update_success,
+        last_update_success_time=updated_at,
+        update_interval=timedelta(seconds=30),
+    )
+    hass = SimpleNamespace(
+        data={
+            "power_sync": {
+                entry_id: {
+                    "fronius_reserva_coordinator": coordinator,
+                    "inverter_last_state": "curtailed",
+                }
+            }
+        }
+    )
+    entry = SimpleNamespace(entry_id=entry_id)
+    source = _function_source("_get_cached_live_status").replace(
+        "            from .automations.live_status import coordinator_data_to_ev_live_status\n\n",
+        "",
+    )
+    namespace = {
+        "Any": object,
+        "DOMAIN": "power_sync",
+        "hass": hass,
+        "entry": entry,
+        "timedelta": timedelta,
+        "dt_util": SimpleNamespace(utcnow=lambda: datetime.now(timezone.utc)),
+        "_LOGGER": SimpleNamespace(
+            debug=lambda *args, **kwargs: None,
+            warning=lambda *args, **kwargs: None,
+        ),
+        "coordinator_data_to_ev_live_status": lambda data: {
+            "load_power": data["load_power"] * 1000,
+            "grid_power": data["grid_power"] * 1000,
+            "battery_power": data["battery_power"] * 1000,
+        },
+    }
+    exec(textwrap.dedent(source), namespace)
+    return namespace["_get_cached_live_status"]()
+
+
+def test_fronius_load_following_rejects_failed_not_ready_or_stale_snapshot():
+    now = datetime.now(timezone.utc)
+
+    assert _cached_fronius_live_status(updated_at=now)["load_power"] == 1200
+    assert _cached_fronius_live_status(
+        last_update_success=False, updated_at=now
+    ) is None
+    assert _cached_fronius_live_status(
+        telemetry_ready=False, updated_at=now
+    ) is None
+    assert _cached_fronius_live_status(
+        updated_at=now - timedelta(seconds=121)
+    ) is None
+
+
+def test_fronius_initial_load_following_requires_a_fresh_load_target():
+    source = _function_source("apply_inverter_curtailment")
+
+    assert 'live_status.get("load_power") is not None' in source
+    assert 'and fronius_load_following' in source
+    assert 'and home_load_w is None' in source
+    assert "Skipping Fronius load-following limit because fresh" in source
 
 
 def test_fronius_simple_mode_reapply_reports_no_device_limit():

@@ -23584,6 +23584,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _get_cached_live_status() -> dict | None:
         """Get live status from the active site coordinator when available."""
+        def _fronius_snapshot_is_fresh(coordinator: Any, data: Any) -> bool:
+            """Keep Fronius load-following writes behind current site telemetry.
+
+            The Fronius coordinator deliberately retains its last useful
+            payload when its upstream integration is unavailable.  That is
+            useful for display, but a retained load value must never become a
+            new inverter power-limit target.
+            """
+            if (
+                getattr(coordinator, "last_update_success", False) is not True
+                or not isinstance(data, dict)
+                or data.get("telemetry_ready") is not True
+            ):
+                return False
+
+            last_update = getattr(coordinator, "last_update_success_time", None)
+            update_interval = getattr(coordinator, "update_interval", None)
+            if last_update is None:
+                return False
+
+            try:
+                stale_after = max(
+                    update_interval * 4
+                    if update_interval is not None
+                    else timedelta(seconds=120),
+                    timedelta(seconds=60),
+                )
+                now = dt_util.utcnow()
+                if (
+                    getattr(now, "tzinfo", None) is None
+                    and getattr(last_update, "tzinfo", None) is not None
+                ):
+                    now = now.replace(tzinfo=last_update.tzinfo)
+                elif (
+                    getattr(now, "tzinfo", None) is not None
+                    and getattr(last_update, "tzinfo", None) is None
+                ):
+                    last_update = last_update.replace(tzinfo=now.tzinfo)
+                return (now - last_update) <= stale_after
+            except Exception:
+                return False
+
         try:
             from .automations.live_status import coordinator_data_to_ev_live_status
 
@@ -23606,6 +23648,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 data = getattr(coordinator, "data", None)
                 if not data:
                     continue
+                if (
+                    coord_key == "fronius_reserva_coordinator"
+                    and not _fronius_snapshot_is_fresh(coordinator, data)
+                ):
+                    _LOGGER.warning(
+                        "Skipping Fronius load-following telemetry because "
+                        "the coordinator snapshot is not fresh"
+                    )
+                    return None
 
                 live_status = coordinator_data_to_ev_live_status(data)
                 inverter_last_state = entry_data.get("inverter_last_state")
@@ -24498,7 +24549,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     curtail_live_status = live_status
                     if _aemo_dispatch_entry_data() is not entry_data:
                         return False
-                    if live_status and live_status.get("load_power"):
+                    if live_status and live_status.get("load_power") is not None:
                         home_load_w = int(live_status.get("load_power", 0))
                         # Add battery charge rate if battery is charging
                         # battery_power < 0 means charging (negative = consuming power from solar)
@@ -24512,6 +24563,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             home_load_w = total_load_w
                         else:
                             _LOGGER.info(f"🔌 LOAD-FOLLOWING: Home load is {home_load_w}W (battery not charging or <50W)")
+
+                if (
+                    inverter_brand == "fronius"
+                    and fronius_load_following
+                    and home_load_w is None
+                ):
+                    _LOGGER.warning(
+                        "Skipping Fronius load-following limit because fresh "
+                        "site telemetry is unavailable"
+                    )
+                    return False
 
                 if _aemo_dispatch_entry_data() is not entry_data:
                     return False
