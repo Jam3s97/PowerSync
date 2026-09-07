@@ -28,6 +28,7 @@ _ha_components.update = _ha_update
 
 class _UpdateEntityFeature(enum.IntFlag):
     INSTALL = 1
+    SPECIFIC_VERSION = 2
 
 
 _ha_update.UpdateEntityFeature = _UpdateEntityFeature
@@ -266,6 +267,155 @@ def test_install_handles_hacs_pending_restart_without_reinstalling():
         entity_id="update.power_sync_update",
         action=auto_update.AUTO_UPDATE_ACTION_PENDING_RESTART,
     )
+    assert not any(
+        domain == "update" and service == "install"
+        for domain, service, _data, _blocking in hass.services.calls
+    )
+
+
+def test_install_uses_published_tag_when_hacs_metadata_stays_stale():
+    """A generic entity refresh must not hide a newly published release."""
+    state = _State(
+        "update.powersync_update",
+        "off",
+        {
+            "friendly_name": "PowerSync update",
+            "supported_features": 3,
+            "installed_version": "2.12.1238",
+            "latest_version": "2.12.1238",
+        },
+    )
+    hass = _Hass([state])
+
+    async def _published_release(_hass):
+        return auto_update.PublishedRelease("v2.12.1246", "2.12.1246")
+
+    original_release_lookup = auto_update.async_get_latest_published_release
+    auto_update.async_get_latest_published_release = _published_release
+    try:
+        result = asyncio.run(auto_update.async_install_power_sync_update(hass))
+    finally:
+        auto_update.async_get_latest_published_release = original_release_lookup
+
+    assert result == auto_update.AutoUpdateInstallResult(
+        entity_id="update.powersync_update",
+        action=auto_update.AUTO_UPDATE_ACTION_INSTALLED,
+    )
+    assert hass.services.calls == [
+        (
+            "homeassistant",
+            "update_entity",
+            {"entity_id": ["update.powersync_update"]},
+            True,
+        ),
+        (
+            "update",
+            "install",
+            {
+                "entity_id": "update.powersync_update",
+                "version": "v2.12.1246",
+            },
+            True,
+        ),
+    ]
+
+
+def test_stale_hacs_metadata_fails_closed_without_specific_version_support():
+    state = _State(
+        "update.powersync_update",
+        "off",
+        {
+            "friendly_name": "PowerSync update",
+            "supported_features": 1,
+            "installed_version": "2.12.1238",
+            "latest_version": "2.12.1238",
+        },
+    )
+    hass = _Hass([state])
+
+    async def _published_release(_hass):
+        return auto_update.PublishedRelease("v2.12.1246", "2.12.1246")
+
+    original_release_lookup = auto_update.async_get_latest_published_release
+    original_retries = auto_update.HACS_REFRESH_RETRIES
+    original_interval = auto_update.HACS_REFRESH_INTERVAL_S
+    auto_update.async_get_latest_published_release = _published_release
+    auto_update.HACS_REFRESH_RETRIES = 1
+    auto_update.HACS_REFRESH_INTERVAL_S = 0
+    try:
+        result = asyncio.run(auto_update.async_install_power_sync_update(hass))
+    finally:
+        auto_update.async_get_latest_published_release = original_release_lookup
+        auto_update.HACS_REFRESH_RETRIES = original_retries
+        auto_update.HACS_REFRESH_INTERVAL_S = original_interval
+
+    assert result is None
+    assert not any(
+        domain == "update" and service == "install"
+        for domain, service, _data, _blocking in hass.services.calls
+    )
+
+
+def test_stale_hacs_metadata_does_not_install_a_non_newer_release():
+    state = _State(
+        "update.powersync_update",
+        "off",
+        {
+            "friendly_name": "PowerSync update",
+            "supported_features": 3,
+            "installed_version": "2.12.1246",
+            "latest_version": "2.12.1246",
+        },
+    )
+    hass = _Hass([state])
+
+    async def _published_release(_hass):
+        return auto_update.PublishedRelease("v2.12.1246", "2.12.1246")
+
+    original_release_lookup = auto_update.async_get_latest_published_release
+    original_retries = auto_update.HACS_REFRESH_RETRIES
+    auto_update.async_get_latest_published_release = _published_release
+    auto_update.HACS_REFRESH_RETRIES = 1
+    try:
+        result = asyncio.run(auto_update.async_install_power_sync_update(hass))
+    finally:
+        auto_update.async_get_latest_published_release = original_release_lookup
+        auto_update.HACS_REFRESH_RETRIES = original_retries
+
+    assert result is None
+    assert not any(
+        domain == "update" and service == "install"
+        for domain, service, _data, _blocking in hass.services.calls
+    )
+
+
+def test_stale_hacs_metadata_fails_closed_when_release_lookup_is_unavailable():
+    state = _State(
+        "update.powersync_update",
+        "off",
+        {
+            "friendly_name": "PowerSync update",
+            "supported_features": 3,
+            "installed_version": "2.12.1238",
+            "latest_version": "2.12.1238",
+        },
+    )
+    hass = _Hass([state])
+
+    async def _unavailable_release(_hass):
+        return None
+
+    original_release_lookup = auto_update.async_get_latest_published_release
+    original_retries = auto_update.HACS_REFRESH_RETRIES
+    auto_update.async_get_latest_published_release = _unavailable_release
+    auto_update.HACS_REFRESH_RETRIES = 1
+    try:
+        result = asyncio.run(auto_update.async_install_power_sync_update(hass))
+    finally:
+        auto_update.async_get_latest_published_release = original_release_lookup
+        auto_update.HACS_REFRESH_RETRIES = original_retries
+
+    assert result is None
     assert not any(
         domain == "update" and service == "install"
         for domain, service, _data, _blocking in hass.services.calls

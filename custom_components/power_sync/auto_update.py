@@ -50,6 +50,9 @@ POWER_SYNC_UPDATE_HINTS = (
 )
 AUTO_UPDATE_ACTION_INSTALLED = "installed"
 AUTO_UPDATE_ACTION_PENDING_RESTART = "pending_restart"
+GITHUB_LATEST_RELEASE_URL = (
+    "https://api.github.com/repos/bolagnaise/PowerSync/releases/latest"
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,14 @@ class AutoUpdateInstallResult:
 
     entity_id: str
     action: str
+
+
+@dataclass(frozen=True)
+class PublishedRelease:
+    """A published PowerSync release suitable for a HACS version install."""
+
+    tag: str
+    version: str
 
 
 def parse_auto_update_time(value: Any) -> tuple[int, int]:
@@ -116,6 +127,16 @@ def _supports_install(state: Any) -> bool:
     except (TypeError, ValueError):
         supported = 0
     return bool(supported & int(UpdateEntityFeature.INSTALL))
+
+
+def _supports_specific_version(state: Any) -> bool:
+    """Return True when an update entity accepts an explicit release tag."""
+    try:
+        supported = int(state.attributes.get("supported_features", 0))
+        feature = UpdateEntityFeature.SPECIFIC_VERSION
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bool(supported & int(feature))
 
 
 def _version_is_newer(latest: Any, installed: Any) -> bool:
@@ -196,6 +217,46 @@ async def _refresh_hacs_entities(hass: HomeAssistant, entity_ids: list[str]) -> 
         _LOGGER.debug("PowerSync auto-update: HACS entity refresh raised: %s", err)
 
 
+async def async_get_latest_published_release(
+    hass: HomeAssistant,
+) -> PublishedRelease | None:
+    """Read the public GitHub release used as update truth.
+
+    HACS owns downloading and installing the integration. Its generic entity
+    refresh only republishes cached state, however, so it cannot establish
+    whether a release published since HACS last polled is installable.
+    """
+    import aiohttp
+
+    from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+    try:
+        session = async_get_clientsession(hass)
+        async with session.get(
+            GITHUB_LATEST_RELEASE_URL,
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            if response.status != 200:
+                _LOGGER.debug(
+                    "PowerSync auto-update: published-release lookup returned %s",
+                    response.status,
+                )
+                return None
+            tag = str((await response.json()).get("tag_name") or "").strip()
+    except (aiohttp.ClientError, TimeoutError) as err:
+        _LOGGER.debug(
+            "PowerSync auto-update: published-release lookup failed: %s", err
+        )
+        return None
+
+    version = tag.lstrip("v")
+    if not tag or not version:
+        _LOGGER.debug("PowerSync auto-update: published release has no usable tag")
+        return None
+    return PublishedRelease(tag=tag, version=version)
+
+
 async def async_install_power_sync_update(
     hass: HomeAssistant,
     *,
@@ -241,6 +302,7 @@ async def async_install_power_sync_update(
         )
         await _refresh_hacs_entities(hass, entity_ids)
 
+        stale_entities: list[Any] = []
         for entity_id in entity_ids:
             state = hass.states.get(entity_id)
             if state is None:
@@ -276,6 +338,46 @@ async def async_install_power_sync_update(
                     entity_id=entity_id,
                     action=AUTO_UPDATE_ACTION_INSTALLED,
                 )
+
+            stale_entities.append(state)
+
+        # `homeassistant.update_entity` is not a HACS repository refresh: the
+        # HACS entity only republishes its current cached data. If HACS has not
+        # polled since a PowerSync release was published, use the public release
+        # tag as fresh truth but leave the download/install to HACS's supported
+        # update entity boundary. This is deliberately fail-closed.
+        if stale_entities:
+            published_release = await async_get_latest_published_release(hass)
+            if published_release is not None:
+                for state in stale_entities:
+                    installed_version = state.attributes.get("installed_version")
+                    if (
+                        not _supports_specific_version(state)
+                        or not _version_is_newer(
+                            published_release.version, installed_version
+                        )
+                    ):
+                        continue
+                    _LOGGER.info(
+                        "PowerSync auto-update: installing published %s via %s "
+                        "despite stale HACS metadata (installed=%s)",
+                        published_release.tag,
+                        state.entity_id,
+                        installed_version,
+                    )
+                    await hass.services.async_call(
+                        UPDATE_DOMAIN,
+                        SERVICE_INSTALL,
+                        {
+                            ATTR_ENTITY_ID: state.entity_id,
+                            "version": published_release.tag,
+                        },
+                        blocking=True,
+                    )
+                    return AutoUpdateInstallResult(
+                        entity_id=state.entity_id,
+                        action=AUTO_UPDATE_ACTION_INSTALLED,
+                    )
 
         if attempt < HACS_REFRESH_RETRIES:
             _LOGGER.info(
