@@ -1044,7 +1044,9 @@ def test_epex_import_price_sensor_price_values_override_and_pad(opt_module):
 
     assert import_prices[:3] == [0.25, 0.30, 0.35]
     assert import_prices[3:] == [0.35] * 9
-    assert coordinator._last_display_import_prices == import_prices
+    # The LP can pad a finite custom input to its fixed horizon, but the
+    # displayed/source-reference series must not represent that tail as input.
+    assert coordinator._last_display_import_prices == [0.25, 0.30, 0.35]
 
 
 @pytest.mark.parametrize("price_kind", ["import", "export"])
@@ -1122,7 +1124,7 @@ def test_epex_export_price_sensor_price_values_override_and_pad(opt_module):
     assert import_prices == [0.24] * 12
     assert export_prices[:3] == [0.01, 0.02, 0.03]
     assert export_prices[3:] == [0.03] * 9
-    assert coordinator._last_display_export_prices == export_prices
+    assert coordinator._last_display_export_prices == [0.01, 0.02, 0.03]
 
 
 def test_epex_export_price_sensor_timestamped_price_values_align_to_slots(opt_module):

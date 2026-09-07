@@ -646,9 +646,8 @@ class FoxESSEntityController:
             registries.append(local_registry)
 
         for device_registry in registries:
-            devices = getattr(device_registry, "devices", {}) or {}
             for device_id in device_ids:
-                device = devices.get(device_id) if hasattr(devices, "get") else None
+                device = device_registry.async_get(device_id)
                 if device is None:
                     continue
 

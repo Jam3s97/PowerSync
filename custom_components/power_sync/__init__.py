@@ -20,6 +20,7 @@ from .settings_metadata import (
     optimizer_settings_schema,
     split_optimizer_reserve_values,
 )
+from .registry_compat import iter_device_entries
 from .tesla_calibration import (
     CALIBRATION_SOURCE_LOCAL_ALERT,
     CALIBRATION_SOURCE_MODE_STICK,
@@ -1067,7 +1068,7 @@ def _ble_prefix_for_vehicle(hass, config: dict, vehicle_vin: str | None) -> str 
         device_registry = dr.async_get(hass)
         fleet_vins: list[str] = []
         seen_vins: set[str] = set()
-        for device in device_registry.devices.values():
+        for device in iter_device_entries(device_registry):
             for identifier in device.identifiers:
                 if len(identifier) < 2 or identifier[0] not in TESLA_INTEGRATIONS:
                     continue
@@ -1567,7 +1568,7 @@ def _get_ev_vehicle_status(hass, entry) -> dict:
         str,
         list[tuple[str | None, datetime | None]],
     ] = {}
-    for device in device_registry.devices.values():
+    for device in iter_device_entries(device_registry):
         vehicle_id = None
         for identifier in device.identifiers:
             if identifier[0] not in TESLA_INTEGRATIONS:
@@ -1714,7 +1715,7 @@ def _get_ev_vehicle_status(hass, entry) -> dict:
         str,
         tuple[float, datetime | None],
     ] = {}
-    for device in device_registry.devices.values():
+    for device in iter_device_entries(device_registry):
         vehicle_id = None
         for identifier in device.identifiers:
             if identifier[0] in TESLA_INTEGRATIONS:
@@ -1883,7 +1884,7 @@ def _get_ev_vehicles_status(hass, entry) -> list:
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
 
-    for device in device_registry.devices.values():
+    for device in iter_device_entries(device_registry):
         is_tesla_vehicle = False
         vehicle_id = None
         for identifier in device.identifiers:
@@ -14255,7 +14256,7 @@ class EVStatusView(HomeAssistantView):
         if not detected_installation_id:
             try:
                 device_registry = dr.async_get(self._hass)
-                for device in device_registry.devices.values():
+                for device in iter_device_entries(device_registry):
                     for identifier in device.identifiers:
                         if identifier[0] == "zaptec" and "installation" in str(identifier[1]).lower():
                             detected_installation_id = device.id
@@ -14325,7 +14326,7 @@ class EVStatusView(HomeAssistantView):
                 device_registry = dr.async_get(self._hass)
                 seen_vins: set[str] = set()
 
-                for device in device_registry.devices.values():
+                for device in iter_device_entries(device_registry):
                     for identifier in device.identifiers:
                         if identifier[0] in TESLA_INTEGRATIONS:
                             potential_vin = identifier[1]
@@ -14348,7 +14349,7 @@ class EVStatusView(HomeAssistantView):
             byd_available = BYD_INTEGRATION in self._hass.config_entries.async_domains()
             if byd_available:
                 device_registry = dr.async_get(self._hass)
-                for device in device_registry.devices.values():
+                for device in iter_device_entries(device_registry):
                     for identifier in device.identifiers:
                         if identifier[0] == BYD_INTEGRATION:
                             byd_count += 1
@@ -14415,7 +14416,7 @@ def _get_available_ev_vehicles(hass: HomeAssistant) -> list[dict]:
     if ev_provider in (EV_PROVIDER_FLEET_API, EV_PROVIDER_BOTH):
         device_registry = dr.async_get(hass)
         seen_vins: set[str] = set()
-        for device in device_registry.devices.values():
+        for device in iter_device_entries(device_registry):
             for identifier in device.identifiers:
                 if identifier[0] in TESLA_INTEGRATIONS:
                     vin = str(identifier[1])
@@ -14454,7 +14455,7 @@ def _get_available_ev_vehicles(hass: HomeAssistant) -> list[dict]:
     # 3. BYD — scan device registry
     if BYD_INTEGRATION in hass.config_entries.async_domains():
         device_registry = dr.async_get(hass)
-        for device in device_registry.devices.values():
+        for device in iter_device_entries(device_registry):
             for identifier in device.identifiers:
                 if identifier[0] == BYD_INTEGRATION:
                     device_id = str(identifier[1])
@@ -14683,7 +14684,7 @@ class EVVehiclesView(HomeAssistantView):
         vehicles = []
         vehicle_id = start_id
 
-        for device in device_registry.devices.values():
+        for device in iter_device_entries(device_registry):
             is_byd = False
             for identifier in device.identifiers:
                 if identifier[0] == BYD_INTEGRATION:
@@ -15322,7 +15323,7 @@ class EVVehicleCommandView(HomeAssistantView):
         # Fleet API vehicles first
         if ev_provider in (EV_PROVIDER_FLEET_API, EV_PROVIDER_BOTH):
             seen_vins: set[str] = set()
-            for device in device_registry.devices.values():
+            for device in iter_device_entries(device_registry):
                 for identifier in device.identifiers:
                     if len(identifier) < 2:
                         continue
@@ -15381,7 +15382,7 @@ class EVVehicleCommandView(HomeAssistantView):
 
         # Find devices from Tesla integrations
         tesla_devices = []
-        for device in device_registry.devices.values():
+        for device in iter_device_entries(device_registry):
             for identifier in device.identifiers:
                 # Handle identifiers with varying tuple lengths
                 if len(identifier) < 2:
@@ -17775,7 +17776,7 @@ class ChargingScheduleView(HomeAssistantView):
 
         tesla_integrations = TESLA_INTEGRATIONS
 
-        for device in device_registry.devices.values():
+        for device in iter_device_entries(device_registry):
             is_tesla_device = False
             device_vin = None
             for identifier in device.identifiers:
@@ -19449,7 +19450,7 @@ class PriceRecommendationView(HomeAssistantView):
                 if BYD_INTEGRATION in self._hass.config_entries.async_domains():
                     device_reg = dr.async_get(self._hass)
                     entity_reg = er.async_get(self._hass)
-                    for device in device_reg.devices.values():
+                    for device in iter_device_entries(device_reg):
                         if not any(i[0] == BYD_INTEGRATION for i in device.identifiers):
                             continue
                         for entity in entity_reg.entities.values():
@@ -20754,7 +20755,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "_lp_optimizer", "_battery", "_solar_inverter", "_grid_home",
         "_pricing", "_flow_power", "_aemo", "_ev_charging", "_octopus", "_controls",
     }
-    for _dev in list(dev_reg.devices.values()):
+    for _dev in list(iter_device_entries(dev_reg)):
         for _id_tuple in _dev.identifiers:
             if (
                 len(_id_tuple) >= 2

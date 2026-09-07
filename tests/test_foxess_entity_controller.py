@@ -153,7 +153,11 @@ class _FakeHass:
         self.services = _FakeServices(service_names)
         self.entity_registry = _FakeRegistry(registry_entries)
         self.config_entries = _FakeConfigEntries(config_entry_titles, config_entry_data)
-        self.device_registry = SimpleNamespace(devices=devices or {})
+        device_entries = devices or {}
+        self.device_registry = SimpleNamespace(
+            devices=device_entries,
+            async_get=device_entries.get,
+        )
 
 
 def _kw() -> dict[str, str]:

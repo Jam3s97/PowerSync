@@ -33,6 +33,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from .curtailment_config import get_curtailment_price_thresholds
+from .registry_compat import iter_device_entries
 from .const import (
     CONF_POWERWALL_LOCAL_PAIRED,
     CONF_BATTERY_SENSOR_DISPLAY_MODE,
@@ -283,7 +284,7 @@ def _has_tesla_ev_device(hass: HomeAssistant) -> bool:
     except Exception:
         return False
 
-    for device in device_registry.devices.values():
+    for device in iter_device_entries(device_registry):
         for identifier_entry in device.identifiers:
             if not isinstance(identifier_entry, (tuple, list)) or len(identifier_entry) < 2:
                 continue
@@ -1867,7 +1868,7 @@ def _cleanup_inactive_flow_power_registry(
         f"{entry.entry_id}_{SENSOR_FAMILY_FLOW_POWER}_pricing",
     )
     device_registry = dr.async_get(hass)
-    for device in list(device_registry.devices.values()):
+    for device in list(iter_device_entries(device_registry)):
         if flow_device_identifier not in (
             getattr(device, "identifiers", set()) or set()
         ):
@@ -2833,7 +2834,7 @@ def _cleanup_legacy_powerwall_pack_registry(hass: HomeAssistant, entry: ConfigEn
 
     legacy_device_ids: set[str] = set()
     legacy_identifier_prefix = f"{entry.entry_id}_pw_"
-    for device in list(device_registry.devices.values()):
+    for device in list(iter_device_entries(device_registry)):
         identifiers = getattr(device, "identifiers", set()) or set()
         for identifier_entry in identifiers:
             if not isinstance(identifier_entry, (tuple, list)) or len(identifier_entry) < 2:

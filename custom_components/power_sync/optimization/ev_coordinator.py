@@ -41,6 +41,7 @@ from ..automations.ev_ownership import (
     record_ev_command,
     release_ev_ownership,
 )
+from ..registry_compat import iter_device_entries
 
 _LOGGER = logging.getLogger(__name__)
 EV_COORDINATOR_OWNER_MODE = "ev_coordinator"
@@ -1023,7 +1024,7 @@ class EVCoordinator:
         try:
             from homeassistant.helpers import device_registry as dr
             device_registry = dr.async_get(self.hass)
-            for device in device_registry.devices.values():
+            for device in iter_device_entries(device_registry):
                 for identifier in device.identifiers:
                     if identifier[0] == "zaptec" and "installation" in str(identifier[1]).lower():
                         return device.id

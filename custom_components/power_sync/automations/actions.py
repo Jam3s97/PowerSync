@@ -80,6 +80,7 @@ from .ev_phase_allocator import (
     required_phases,
 )
 from ..ev_load import is_current_ev_power_observation
+from ..registry_compat import iter_device_entries
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -707,7 +708,7 @@ async def _get_tesla_ev_entity(
     all_domains_found = set()
     all_tesla_domain_devices = []  # Track all devices from Tesla domains
 
-    for device in device_registry.devices.values():
+    for device in iter_device_entries(device_registry):
         for identifier in device.identifiers:
             # Use index access instead of tuple unpacking (identifiers can have >2 values)
             if len(identifier) < 2:
@@ -920,7 +921,7 @@ def _get_vehicle_name_from_vin(hass: HomeAssistant, vehicle_vin: str) -> str:
     """
     device_registry = dr.async_get(hass)
 
-    for device in device_registry.devices.values():
+    for device in iter_device_entries(device_registry):
         for identifier in device.identifiers:
             if len(identifier) < 2:
                 continue
@@ -1122,7 +1123,7 @@ def _tesla_start_confirmation_entity_ids(
     if len(normalized_vin) == 17 and normalized_vin.isalnum():
         entity_registry = er.async_get(hass)
         device_registry = dr.async_get(hass)
-        for device in device_registry.devices.values():
+        for device in iter_device_entries(device_registry):
             if not any(
                 len(identifier) >= 2
                 and identifier[0] in TESLA_EV_INTEGRATIONS
@@ -1875,7 +1876,7 @@ def _resolve_ble_prefix_for_vehicle(
             device_registry = dr.async_get(hass)
             fleet_vins: list[str] = []
             seen_vins: set[str] = set()
-            for device in device_registry.devices.values():
+            for device in iter_device_entries(device_registry):
                 for identifier in device.identifiers:
                     if len(identifier) < 2 or identifier[0] not in TESLA_EV_INTEGRATIONS:
                         continue
@@ -1932,7 +1933,7 @@ def _canonical_dynamic_tesla_vehicle_id(
         device_registry = dr.async_get(hass)
         fleet_vins: list[str] = []
         seen_vins: set[str] = set()
-        for device in device_registry.devices.values():
+        for device in iter_device_entries(device_registry):
             for identifier in device.identifiers:
                 if len(identifier) < 2 or identifier[0] not in TESLA_EV_INTEGRATIONS:
                     continue
@@ -10231,7 +10232,7 @@ def _exact_tesla_wall_connector_vehicle_associations(
             continue
         registered = entity_registry.entities.get(state.entity_id)
         device = (
-            device_registry.devices.get(getattr(registered, "device_id", None))
+            device_registry.async_get(getattr(registered, "device_id", None))
             if registered is not None
             else None
         )
@@ -10275,7 +10276,7 @@ def _exact_tesla_wall_connector_vehicle_associations(
             not in TESLA_EV_INTEGRATIONS
         ):
             continue
-        device = device_registry.devices.get(
+        device = device_registry.async_get(
             getattr(registered, "device_id", None)
         )
         serial = _tesla_wall_connector_serial(device)
@@ -10359,7 +10360,7 @@ async def _resolve_tesla_active_charger_capability(
     device_registry = dr.async_get(hass)
     source_entity_ids: list[tuple[list[str], str]] = []
     normalized_vin = vehicle_vin.upper()
-    for device in device_registry.devices.values():
+    for device in iter_device_entries(device_registry):
         matches_vin = any(
             len(identifier) >= 2
             and identifier[0] in TESLA_EV_INTEGRATIONS

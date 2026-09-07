@@ -14729,6 +14729,20 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         n_steps: int,
     ) -> list[float]:
         """Convert timestamp-keyed sensor values into optimizer price slots."""
+        prices, _source_steps = self._timestamped_price_values_to_slots_with_coverage(
+            raw_values,
+            unit,
+            n_steps,
+        )
+        return prices
+
+    def _timestamped_price_values_to_slots_with_coverage(
+        self,
+        raw_values: dict[Any, Any],
+        unit: str | None,
+        n_steps: int,
+    ) -> tuple[list[float], int]:
+        """Convert timestamped values and retain their source-valid boundary."""
         interval = max(1, self._config.interval_minutes)
         now = dt_util.now()
         current_window = now.replace(
@@ -14751,10 +14765,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entries.append((start_dt, price))
 
         if not entries:
-            return []
+            return [], 0
 
         entries.sort(key=lambda item: item[0])
         slots: list[float | None] = [None] * n_steps
+        source_steps = 0
         last_delta = timedelta(minutes=interval)
         for idx, (start_dt, price) in enumerate(entries):
             next_start = entries[idx + 1][0] if idx + 1 < len(entries) else None
@@ -14780,8 +14795,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             start_idx, end_idx = slot_bounds
             for pos in range(start_idx, end_idx):
                 slots[pos] = price
+            source_steps = max(source_steps, end_idx)
 
-        return self._fill_price_gaps(slots)
+        return self._fill_price_gaps(slots), source_steps
 
     def _timestamp_attribute_price_values(
         self,
@@ -14799,7 +14815,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         n_steps: int,
         entity_id: str | None,
         price_kind: str,
-    ) -> list[float] | None:
+    ) -> tuple[list[float], int] | None:
         """Read an optional EPEX price override sensor."""
         if not entity_id:
             return None
@@ -14835,14 +14851,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         raw_values = attrs.get("price_values")
 
         values: list[float | None] = []
+        source_steps = n_steps
         if isinstance(raw_values, list) and raw_values:
             values = [
                 self._epex_sensor_value_to_major(value, unit)
                 for value in raw_values
             ]
             display_prices = self._fill_price_gaps(values)
+            source_steps = len(display_prices)
         elif isinstance(raw_values, dict) and raw_values:
-            display_prices = self._timestamped_price_values_to_slots(
+            display_prices, source_steps = self._timestamped_price_values_to_slots_with_coverage(
                 raw_values,
                 unit,
                 n_steps,
@@ -14850,7 +14868,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             timestamp_values = self._timestamp_attribute_price_values(attrs)
             if timestamp_values:
-                display_prices = self._timestamped_price_values_to_slots(
+                display_prices, source_steps = self._timestamped_price_values_to_slots_with_coverage(
                     timestamp_values,
                     unit,
                     n_steps,
@@ -14887,6 +14905,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 [display_prices[-1]] * (n_steps - len(display_prices))
             )
         display_prices = display_prices[:n_steps]
+        source_steps = min(source_steps, len(display_prices))
 
         _LOGGER.info(
             "EPEX %s price override: using %s (%d steps, %.2f-%.2f ct/kWh)",
@@ -14896,9 +14915,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             min(display_prices) * 100,
             max(display_prices) * 100,
         )
-        return display_prices
+        return display_prices, source_steps
 
-    def _read_epex_import_price_entity(self, n_steps: int) -> list[float] | None:
+    def _read_epex_import_price_entity(
+        self,
+        n_steps: int,
+    ) -> tuple[list[float], int] | None:
         """Read the optional EPEX import price override sensor."""
         return self._read_epex_price_entity(
             n_steps,
@@ -14909,23 +14931,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _read_epex_export_price_entity(
         self,
         n_steps: int,
-    ) -> tuple[list[float], list[float]] | None:
+    ) -> tuple[list[float], list[float], int] | None:
         """Read the optional EPEX export price override sensor.
 
         Returns display prices and LP prices in EUR/kWh. Display prices preserve
         signed export earnings; LP prices are clamped so negative export value
         cannot become profitable revenue.
         """
-        display_prices = self._read_epex_price_entity(
+        override = self._read_epex_price_entity(
             n_steps,
             self._epex_export_price_entity_id(),
             "export",
         )
-        if display_prices is None:
+        if override is None:
             return None
+        display_prices, source_steps = override
 
         lp_prices = [max(0.0, price) for price in display_prices]
-        return display_prices, lp_prices
+        return display_prices, lp_prices, source_steps
 
     async def _get_price_forecast(self) -> tuple[list[float], list[float]] | None:
         """Get price forecasts for optimizer.
@@ -15401,15 +15424,21 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                         )
 
                     if import_prices:
+                        display_import_steps = actual_price_intervals
+                        display_export_steps = actual_price_intervals
                         epex_import_override = self._read_epex_import_price_entity(
                             n_steps
                         )
                         if epex_import_override is not None:
-                            import_prices = epex_import_override
+                            import_prices, display_import_steps = epex_import_override
 
                         epex_override = self._read_epex_export_price_entity(n_steps)
                         if epex_override is not None:
-                            display_export_raw, export_prices = epex_override
+                            (
+                                display_export_raw,
+                                export_prices,
+                                display_export_steps,
+                            ) = epex_override
 
                         # Apply Flow Power export schedule before display storage.
                         # For Flow Power, the synthetic Happy Hour schedule IS the
@@ -15429,8 +15458,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         # display_export_raw keeps the signed export rate so the
                         # chart shows negative dips when wholesale is oversupplied
                         # (Amber feedIn perKwh > 0 → you pay to export).
-                        self._last_display_import_prices = list(import_prices[:actual_price_intervals])
-                        self._last_display_export_prices = list(display_export_raw[:actual_price_intervals])
+                        self._last_display_import_prices = list(
+                            import_prices[:display_import_steps]
+                        )
+                        self._last_display_export_prices = list(
+                            display_export_raw[:display_export_steps]
+                        )
                         self._last_grid_charge_cap_import_prices = list(import_prices)
 
                         # Apply export boost, saving session overlay, and chip mode to LP prices.

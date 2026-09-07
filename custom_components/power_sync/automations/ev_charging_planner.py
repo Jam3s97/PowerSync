@@ -24,6 +24,7 @@ import re
 from homeassistant.util import dt as dt_util
 
 from ..sensitive_logging import obfuscate_log_arg, obfuscate_vin_tokens
+from ..registry_compat import iter_device_entries
 from ..ev_load import is_current_ev_power_observation
 from ..const import (
     CONF_SOLAR_FORECAST_PROVIDER,
@@ -414,7 +415,7 @@ def _configured_ble_prefixes(
         device_registry = dr.async_get(hass)
         fleet_vins: list[str] = []
         seen_vins: set[str] = set()
-        for device in device_registry.devices.values():
+        for device in iter_device_entries(device_registry):
             for identifier in device.identifiers:
                 if len(identifier) < 2 or identifier[0] not in TESLA_INTEGRATIONS:
                     continue
@@ -609,7 +610,7 @@ def _iter_tesla_vehicle_devices(device_registry) -> Iterator[Tuple[Any, str]]:
     Future BLE-style extensions or new Tesla integrations only need to
     change this helper rather than edit every call site.
     """
-    for device in device_registry.devices.values():
+    for device in iter_device_entries(device_registry):
         for identifier in device.identifiers:
             if len(identifier) >= 2 and identifier[0] in TESLA_INTEGRATIONS:
                 id_str = str(identifier[1])
@@ -4741,7 +4742,7 @@ class AutoScheduleExecutor:
             from homeassistant.helpers import device_registry as dr
             device_registry = dr.async_get(self.hass)
             seen_vins: set[str] = set()
-            for device in device_registry.devices.values():
+            for device in iter_device_entries(device_registry):
                 for identifier in device.identifiers:
                     if len(identifier) < 2:
                         continue
@@ -9565,7 +9566,7 @@ class PriceLevelChargingExecutor:
 
             # Find Tesla devices (with VIN mapping)
             tesla_device_map: Dict[str, str] = {}  # device_id -> VIN
-            for device in device_reg.devices.values():
+            for device in iter_device_entries(device_reg):
                 # Check various Tesla integration identifiers.
                 # Historical note: an earlier version also tested
                 # `domain in ("tesla_ble", "tesla_bluetooth")` here, but
