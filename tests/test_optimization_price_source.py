@@ -1047,6 +1047,37 @@ def test_epex_import_price_sensor_price_values_override_and_pad(opt_module):
     assert coordinator._last_display_import_prices == import_prices
 
 
+@pytest.mark.parametrize("price_kind", ["import", "export"])
+def test_epex_structured_forecast_attribute_falls_back_to_native_prices(
+    opt_module,
+    price_kind,
+):
+    entity_id = f"sensor.actual_{price_kind}_price"
+    coordinator = _coordinator_with_epex_provider(
+        opt_module,
+        [
+            _State(
+                entity_id,
+                "0.123456",
+                unit="EUR/kWh",
+                attributes={
+                    "forecast": [
+                        {"start": "2026-05-03T10:00:00+02:00", "end": "2026-05-03T10:15:00+02:00", "value": 0.20},
+                        {"start": "2026-05-03T10:15:00+02:00", "end": "2026-05-03T10:30:00+02:00", "value": 0.05},
+                    ]
+                },
+            )
+        ],
+    )
+
+    import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    if price_kind == "import":
+        assert import_prices == [0.24] * 12
+    else:
+        assert export_prices == [0.08] * 12
+
+
 def test_epex_import_price_sensor_timestamped_price_values_align_to_slots(opt_module):
     coordinator = _coordinator_with_epex_provider(
         opt_module,

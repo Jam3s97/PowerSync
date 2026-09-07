@@ -14856,6 +14856,19 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     n_steps,
                 )
             else:
+                # A structured forecast is not a scalar fallback.  Template
+                # sensors often expose future values as {start, end, value}
+                # objects here; flattening those to the current state silently
+                # replaces the native EPEX horizon with a flat price.
+                if isinstance(attrs.get("forecast"), (list, dict)) and attrs["forecast"]:
+                    _LOGGER.warning(
+                        "EPEX %s price override sensor %s has an unsupported "
+                        "forecast attribute; using EPEX %s prices",
+                        price_kind,
+                        entity_id,
+                        price_kind,
+                    )
+                    return None
                 value = self._epex_sensor_value_to_major(state_value, unit)
                 display_prices = [value] if value is not None else []
 

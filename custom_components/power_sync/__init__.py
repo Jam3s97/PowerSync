@@ -32749,7 +32749,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         auto_restore_discharge_solaredge,
                         force_discharge_state["expires_at"],
                     )
-                    await persist_force_mode_state()
+                    try:
+                        await persist_force_mode_state()
+                    except Exception:
+                        # The command was already confirmed and its expiry
+                        # timer is armed. Do not make the in-memory state
+                        # false while leaving the active event and timer live
+                        # merely because restart persistence failed.
+                        _LOGGER.exception(
+                            "SolarEdge force discharge is active but its "
+                            "restart state could not be persisted"
+                        )
+                        return {
+                            "success": True,
+                            "warning": "Force discharge is active, but its restart state could not be saved.",
+                        }
                     return {"success": True}
                 else:
                     force_discharge_state["active"] = False
