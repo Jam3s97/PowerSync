@@ -148,16 +148,15 @@ def test_degraded_solaredge_does_not_release_curtailment():
 
 
 @pytest.mark.parametrize("direction", ["charge", "discharge"])
-@pytest.mark.parametrize("release_ok", [True, False])
-def test_manual_solaredge_failure_does_not_arm_timer(direction, release_ok):
+def test_manual_solaredge_rejected_write_does_not_arm_timer(direction):
     handler = _setup_node(f"handle_force_{direction}")
-    branch = next(
+    branch = [
         n
         for n in handler.body
         if isinstance(n, ast.If)
         and isinstance(n.test, ast.Name)
         and n.test.id == "is_solaredge_local"
-    )
+    ][-1]
     handler.body = branch.body
     coord = SimpleNamespace(**{f"force_{direction}": AsyncMock(return_value=False)})
     data = {"solaredge_coordinator": coord}
@@ -181,9 +180,6 @@ def test_manual_solaredge_failure_does_not_arm_timer(direction, release_ok):
         "command_power_w": 2000,
         "force_charge_state": {"active": False},
         "force_discharge_state": {"active": False},
-        "_restore_solaredge_curtailment_for_dispatch": AsyncMock(
-            return_value=release_ok
-        ),
         "_guarded_force_discharge_write": guarded,
         "_LOGGER": logging.getLogger(__name__),
         "HomeAssistantError": RuntimeError,
@@ -196,8 +192,7 @@ def test_manual_solaredge_failure_does_not_arm_timer(direction, release_ok):
         asyncio.run(call(None))
     timer.assert_not_called()
     dispatch.assert_not_called()
-    if not release_ok:
-        getattr(coord, f"force_{direction}").assert_not_awaited()
+    getattr(coord, f"force_{direction}").assert_awaited_once()
 
 
 def test_solaredge_startup_does_not_replay_persisted_force():
@@ -502,13 +497,13 @@ def test_solaredge_confirmed_manual_service_returns_response_dict(operation, sou
     from datetime import datetime, timedelta, timezone
 
     handler = _setup_node(f"handle_{operation}")
-    branch = next(
+    branch = [
         n
         for n in handler.body
         if isinstance(n, ast.If)
         and isinstance(n.test, ast.Name)
         and n.test.id == "is_solaredge_local"
-    )
+    ][-1]
     if source == "optimizer" and operation.startswith("force_"):
         branch = next(
             n

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -25,12 +26,12 @@ def _setup_node():
 
 def _load_manual_branch(service, namespace):
     handler = next(node for node in _setup_node().body if getattr(node, "name", None) == service)
-    branch = next(
+    branch = [
         node for node in handler.body
         if isinstance(node, ast.If)
         and isinstance(node.test, ast.Name)
         and node.test.id == "is_solaredge_local"
-    )
+    ][-1]
     # Keep the entire backend branch, including failure handling and returns.
     wrapper = ast.parse("async def invoke(call): pass").body[0]
     wrapper.body = branch.body
@@ -39,6 +40,35 @@ def _load_manual_branch(service, namespace):
         namespace,
     )
     return namespace["invoke"]
+
+
+def _load_solaredge_release_preflight(service, namespace):
+    """Run the actual pre-arm SolarEdge gate without importing Home Assistant."""
+    handler = next(node for node in _setup_node().body if getattr(node, "name", None) == service)
+    cancel_index = next(
+        index
+        for index, node in enumerate(handler.body)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "_cancel_all_force_timers"
+    )
+    preflight_index = next(
+        index
+        for index, node in enumerate(handler.body[:cancel_index])
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "is_solaredge_local"
+            for target in node.targets
+        )
+    )
+    wrapper = ast.parse("async def invoke(): pass").body[0]
+    wrapper.body = copy.deepcopy(handler.body[preflight_index:cancel_index])
+    exec(  # noqa: S102 - Execute repository code without importing Home Assistant.
+        compile(ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[])), str(INIT_PATH), "exec"),
+        namespace,
+    )
+    return namespace["invoke"], handler, preflight_index, cancel_index
 
 
 def _context(method, outcome):
@@ -152,6 +182,79 @@ def test_solaredge_force_charge_persistence_failure_keeps_confirmed_state_active
     namespace["async_track_point_in_utc_time"].assert_called_once()
     namespace["async_dispatcher_send"].assert_called_once()
     coordinator.force_charge.assert_awaited_once()
+
+
+@pytest.mark.parametrize("direction", ["charge", "discharge"])
+def test_rejected_solaredge_release_preserves_existing_force_lifecycle(direction):
+    """A pre-hardware release rejection must not cancel or replace a force timer."""
+    service = f"handle_force_{direction}"
+    state_key = f"force_{direction}_state"
+    prior_timer = Mock()
+    state = {
+        "active": True,
+        "expires_at": "existing-expiry",
+        "cancel_expiry_timer": prior_timer,
+        "duration": 30,
+    }
+    release = AsyncMock(return_value=False)
+    coordinator = SimpleNamespace(
+        force_charge=AsyncMock(), force_discharge=AsyncMock()
+    )
+
+    async def guarded(callback):
+        return await callback(2000)
+
+    namespace = {
+        "hass": SimpleNamespace(
+            data={"power_sync": {"entry": {"solaredge_coordinator": coordinator}}}
+        ),
+        "entry": SimpleNamespace(
+            entry_id="entry", data={"battery_system": "solaredge"}
+        ),
+        "DOMAIN": "power_sync",
+        "CONF_BATTERY_SYSTEM": "battery_system",
+        "CONF_SOLAREDGE_HOST": "solaredge_host",
+        "CONF_SOLAREDGE_ENTITY_PREFIX": "solaredge_entity_prefix",
+        "BATTERY_SYSTEM_SOLAREDGE": "solaredge",
+        "force_charge_state": state if direction == "charge" else {"active": False},
+        "force_discharge_state": state if direction == "discharge" else {"active": False},
+        "_restore_solaredge_curtailment_for_dispatch": release,
+        "_guarded_force_discharge_write": guarded,
+        "_LOGGER": Mock(),
+        "HomeAssistantError": RuntimeError,
+    }
+    invoke, handler, preflight_index, cancel_index = _load_solaredge_release_preflight(
+        service, namespace
+    )
+
+    with pytest.raises(RuntimeError, match="curtailment release"):
+        asyncio.run(invoke())
+
+    # The extracted gate is from the real handler and precedes the destructive
+    # lifecycle work in that handler, rather than testing a look-alike helper.
+    assert preflight_index < cancel_index
+    assert any(
+        isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Subscript)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == state_key
+            and isinstance(target.slice, ast.Constant)
+            and target.slice.value == "active"
+            for target in node.targets
+        )
+        for node in handler.body[cancel_index + 1 :]
+    )
+    assert state == {
+        "active": True,
+        "expires_at": "existing-expiry",
+        "cancel_expiry_timer": prior_timer,
+        "duration": 30,
+    }
+    prior_timer.assert_not_called()
+    release.assert_awaited_once()
+    coordinator.force_charge.assert_not_awaited()
+    coordinator.force_discharge.assert_not_awaited()
 
 
 @pytest.mark.parametrize("outcome", [True, False])

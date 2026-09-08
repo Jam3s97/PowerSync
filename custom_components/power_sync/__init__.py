@@ -31990,6 +31990,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 inheritance_required=bool(transitioning_from_force_charge),
             )
 
+        # SolarEdge's curtailment release is a safety gate, not a force-mode
+        # transition. Run it before cancelling an existing expiry timer or
+        # publishing a new local force state: a rejected/uncertain release
+        # must leave an earlier command's lifecycle intact and a fresh request
+        # inactive.
+        is_solaredge_local = bool(
+            entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLAREDGE
+            or entry.data.get(CONF_SOLAREDGE_HOST)
+            or entry.data.get(CONF_SOLAREDGE_ENTITY_PREFIX)
+        )
+        if is_solaredge_local:
+            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            solaredge_coord = entry_data.get("solaredge_coordinator")
+            if not solaredge_coord:
+                _LOGGER.error("Force discharge: SolarEdge coordinator not available")
+                hass.async_create_task(
+                    _notify_api_error(
+                        hass,
+                        "Force Discharge Failed",
+                        "SolarEdge control entities are unavailable",
+                    )
+                )
+                raise HomeAssistantError("SolarEdge control entities are unavailable")
+            release_result = await _guarded_force_discharge_write(
+                lambda _guarded_w: _restore_solaredge_curtailment_for_dispatch(
+                    entry_data,
+                    "force discharge",
+                )
+            )
+            if not release_result:
+                raise HomeAssistantError("SolarEdge curtailment release was not confirmed")
+
         # Cancel any pending expiry timers and advance the generation counter
         # synchronously — before any await — so that a queued restore callback
         # from a previous command cannot fire during this command's I/O window.
@@ -32731,30 +32763,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "Sungrow Modbus communication error"))
                 return
 
-        is_solaredge_local = bool(
-            entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLAREDGE
-            or entry.data.get(CONF_SOLAREDGE_HOST)
-            or entry.data.get(CONF_SOLAREDGE_ENTITY_PREFIX)
-        )
         if is_solaredge_local:
             try:
+                # Re-read after the awaited release in case an unload/reload
+                # replaced the entry while that safety check was in flight.
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 solaredge_coord = entry_data.get("solaredge_coordinator")
                 if not solaredge_coord:
-                    force_discharge_state["active"] = False
-                    _LOGGER.error("Force discharge: SolarEdge coordinator not available")
-                    hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "SolarEdge control entities are unavailable"))
                     raise HomeAssistantError("SolarEdge control entities are unavailable")
-
                 power_w = command_power_w
-                release_result = await _guarded_force_discharge_write(
-                    lambda _guarded_w: _restore_solaredge_curtailment_for_dispatch(
-                        entry_data,
-                        "force discharge",
-                    )
-                )
-                if not release_result:
-                    raise HomeAssistantError("SolarEdge curtailment release was not confirmed")
                 discharge_result = await _guarded_force_discharge_write(
                     lambda guarded_w: solaredge_coord.force_discharge(
                         duration, power_w=guarded_w, automatic=source == "optimizer"
@@ -33793,6 +33810,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 return
 
+        # As with force discharge, do not disturb an existing force lifecycle
+        # until SolarEdge has definitely released any active-power curtailment.
+        # A rejected/uncertain release is a pre-hardware failure.
+        is_solaredge_local = bool(
+            entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLAREDGE
+            or entry.data.get(CONF_SOLAREDGE_HOST)
+            or entry.data.get(CONF_SOLAREDGE_ENTITY_PREFIX)
+        )
+        if is_solaredge_local:
+            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            solaredge_coord = entry_data.get("solaredge_coordinator")
+            if not solaredge_coord:
+                _LOGGER.error("Force charge: SolarEdge coordinator not available")
+                hass.async_create_task(
+                    _notify_api_error(
+                        hass,
+                        "Force Charge Failed",
+                        "SolarEdge control entities are unavailable",
+                    )
+                )
+                raise HomeAssistantError("SolarEdge control entities are unavailable")
+            release_result = await _restore_solaredge_curtailment_for_dispatch(
+                entry_data,
+                "force charge",
+            )
+            if not release_result:
+                raise HomeAssistantError("SolarEdge curtailment release was not confirmed")
+
         # Cancel any pending expiry timers and advance the generation counter
         # synchronously — before any await — so that a queued restore callback
         # from a previous command cannot fire during this command's I/O window.
@@ -34552,36 +34597,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Sungrow Modbus communication error"))
                 return
 
-        is_solaredge_local = bool(
-            entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLAREDGE
-            or entry.data.get(CONF_SOLAREDGE_HOST)
-            or entry.data.get(CONF_SOLAREDGE_ENTITY_PREFIX)
-        )
         if is_solaredge_local:
             try:
+                # Re-read after the awaited release in case an unload/reload
+                # replaced the entry while that safety check was in flight.
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 solaredge_coord = entry_data.get("solaredge_coordinator")
                 if not solaredge_coord:
-                    force_charge_state["active"] = False
-                    _LOGGER.error("Force charge: SolarEdge coordinator not available")
-                    hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "SolarEdge control entities are unavailable"))
                     raise HomeAssistantError("SolarEdge control entities are unavailable")
-
-                if force_discharge_state["active"]:
-                    _LOGGER.info("Canceling active discharge mode to enable SolarEdge charge mode")
-                    if force_discharge_state.get("cancel_expiry_timer"):
-                        force_discharge_state["cancel_expiry_timer"]()
-                        force_discharge_state["cancel_expiry_timer"] = None
-                    force_discharge_state["active"] = False
-                    force_discharge_state["expires_at"] = None
-
                 power_w = command_power_w
-                release_result = await _restore_solaredge_curtailment_for_dispatch(
-                    entry_data,
-                    "force charge",
-                )
-                if not release_result:
-                    raise HomeAssistantError("SolarEdge curtailment release was not confirmed")
                 charge_result = await solaredge_coord.force_charge(duration, power_w=power_w, automatic=source == "optimizer")
 
                 if charge_result:
