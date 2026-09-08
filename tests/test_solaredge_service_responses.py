@@ -137,6 +137,23 @@ def test_solaredge_force_discharge_persistence_failure_keeps_confirmed_state_act
     coordinator.force_discharge.assert_awaited_once()
 
 
+def test_solaredge_force_charge_persistence_failure_keeps_confirmed_state_active():
+    namespace, coordinator, _events = _context("force_charge", True)
+    namespace["persist_force_mode_state"] = AsyncMock(
+        side_effect=OSError("storage unavailable")
+    )
+    invoke = _load_manual_branch("handle_force_charge", namespace)
+
+    result = asyncio.run(invoke(SimpleNamespace(data={})))
+
+    assert result["success"] is True
+    assert "restart state" in result["warning"]
+    assert namespace["force_charge_state"]["active"] is True
+    namespace["async_track_point_in_utc_time"].assert_called_once()
+    namespace["async_dispatcher_send"].assert_called_once()
+    coordinator.force_charge.assert_awaited_once()
+
+
 @pytest.mark.parametrize("outcome", [True, False])
 def test_manual_restore_response_requires_confirmed_write(outcome):
     namespace, coordinator, events = _context("restore_normal", outcome)
