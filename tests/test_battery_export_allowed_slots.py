@@ -499,6 +499,78 @@ def test_profit_max_solar_export_fails_closed_without_capability(opt_module):
     assert slots == [False, False]
 
 
+@pytest.mark.parametrize("fallback", [False, True])
+def test_battery_price_floor_preserves_solar_export_and_home_supply(
+    opt_module, monkeypatch, fallback
+):
+    """#368: sell 9c solar, refill at 3c, never sell battery below 30c."""
+    coordinator = _sigenergy_profit_max_coordinator(opt_module)
+    coordinator.battery_system = "fronius_reserva"
+    coordinator._entry.options["electricity_provider"] = "amber"
+    coordinator._saving_session_coordinator = None
+    coordinator._config.min_export_price = 0.30
+    coordinator._config.allow_grid_charge = False
+    coordinator._solar_export_hold.capability = lambda: {
+        "supported": True,
+        "reason": "supported",
+        "adapter": "fronius_reserva.entity.block_charging.v1",
+        "export_limit_kw": 5.0,
+    }
+    prices = [0.09, 0.03, 0.03, 0.03]
+    solar = [2.0, 5.0, 0.0, 0.0]
+    load = [1.0] * 4
+    allowed = coordinator._battery_export_allowed_slots(4, prices)
+    held = coordinator._profit_max_solar_export_slots(
+        [0.40] * 4, prices, solar, load, 0.5, [False] * 4, [False] * 4
+    )
+    assert allowed == [False] * 4
+    assert held == [True, False, False, False]
+    monkeypatch.delitem(sys.modules, "power_sync.optimization.battery_optimizer")
+    monkeypatch.delitem(sys.modules, "power_sync.optimization.schedule_reader")
+    optimizer_module = importlib.import_module("power_sync.optimization.battery_optimizer")
+    if fallback:
+        monkeypatch.setattr(optimizer_module, "HIGHS_AVAILABLE", False)
+    optimizer = optimizer_module.BatteryOptimizer(
+        capacity_wh=10000, max_charge_w=5000, max_discharge_w=5000,
+        max_grid_export_w=5000, efficiency=0.92, backup_reserve=0.2,
+        interval_minutes=60, horizon_hours=4,
+    )
+    result = optimizer.optimize(
+        import_prices=[0.40] * 4, export_prices=prices,
+        solar_forecast=solar, load_forecast=load, current_soc=0.5,
+        allow_battery_export=allowed, allow_grid_charge=False,
+        block_battery_charge=held, profit_max_solar_export_slots=held,
+    )
+    assert result.feasible
+    assert result.solver_used == ("greedy" if fallback else "highs")
+    assert result.schedule.actions[0].action == "solar_export"
+    assert result.schedule.actions[0].battery_charge_w == pytest.approx(0, abs=0.1)
+    assert result.grid_export_w[0] == pytest.approx(1000, abs=0.1)
+    assert result.schedule.actions[1].battery_charge_w > 0
+    assert max(result.schedule.battery_export_w) <= 0.1
+    assert result.schedule.actions[2].battery_discharge_w > 0
+
+
+@pytest.mark.parametrize("deadline", [False, True])
+def test_battery_floor_solar_hold_releases_when_repayment_is_unavailable(
+    opt_module, deadline
+):
+    coordinator = _sigenergy_profit_max_coordinator(opt_module)
+    coordinator._config.min_export_price = 0.30
+    coordinator._config.allow_grid_charge = False
+    coordinator._config.charge_by_time_enabled = deadline
+    coordinator._optimizer.pre_window_slot = 1 if deadline else None
+    held = coordinator._profit_max_solar_export_slots(
+        [0.40] * 3, [0.09, 0.03, 0.03],
+        [2.0, 5.0 if deadline else 0.0, 0.0], [1.0] * 3,
+        0.5, [False] * 3, [False] * 3,
+    )
+    assert held == [False] * 3
+    assert coordinator._solar_export_capability_status["current_slot"]["reason"] == (
+        "insufficient_cheaper_replenishment"
+    )
+
+
 def test_charge_by_time_requires_repayment_before_deadline(opt_module):
     coordinator = _sigenergy_profit_max_coordinator(opt_module)
     coordinator._config.charge_by_time_enabled = True
@@ -4777,10 +4849,13 @@ class _FakeSolarExportHold:
         return self.clear_result
 
 
-def test_solar_export_action_records_effective_only_after_hold_confirmation(opt_module):
+@pytest.mark.parametrize("floor", [0.0, 0.30])
+def test_solar_export_action_records_effective_only_after_hold_confirmation(opt_module, floor):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
     coordinator.battery_system = "sigenergy"
+    coordinator._config.min_export_price = floor
+    coordinator._last_settlement_export_prices = [0.09]
     hold = _FakeSolarExportHold()
     coordinator._solar_export_hold = hold
     action = SimpleNamespace(
@@ -4796,6 +4871,31 @@ def test_solar_export_action_records_effective_only_after_hold_confirmation(opt_
     assert coordinator._last_executed_action == "solar_export"
     assert battery.force_charge_calls == []
     assert battery.force_discharge_calls == []
+
+
+@pytest.mark.parametrize(
+    "price,floor,allowed,reason",
+    [
+        (0.299999, 0.30, False, "below_minimum_price"),
+        (0.30, 0.30, True, "price_at_or_above_minimum"),
+        (0.31, 0.30, True, "price_at_or_above_minimum"),
+        (None, 0.30, False, "price_unavailable"),
+        (float("nan"), 0.30, False, "price_unavailable"),
+        (0.09, 0.0, True, "disabled"),
+    ],
+)
+def test_battery_export_price_status_uses_settlement_price(
+    opt_module, price, floor, allowed, reason
+):
+    coordinator = _execution_coordinator(opt_module, _FakeBattery(), soc=0.8)
+    coordinator._config.min_export_price = floor
+    coordinator._last_settlement_export_prices = [price]
+    coordinator._last_export_prices = [0.50]
+    now = datetime(2026, 5, 3, 17, 30, tzinfo=timezone.utc)
+    coordinator._last_price_timestamps = [now]
+    status = coordinator._battery_export_price_status(SimpleNamespace(timestamp=now))
+    assert status["price_allows_battery_export"] is allowed
+    assert status["reason"] == reason
 
 
 def test_solar_export_apply_failure_executes_normal_control_fallback(opt_module):
@@ -5110,6 +5210,9 @@ def test_api_current_action_uses_effective_runtime_action(opt_module):
     coordinator._get_demand_window_config = lambda: None
     coordinator._is_in_demand_window_at = lambda timestamp: False
 
+    coordinator._config.min_export_price = 0.30
+    coordinator._last_price_timestamps = [now]
+    coordinator._last_settlement_export_prices = [0.09]
     data = coordinator.get_api_data()
 
     assert data["planned_current_action"] == "export"
@@ -5118,6 +5221,14 @@ def test_api_current_action_uses_effective_runtime_action(opt_module):
     assert data["current_action"] == "self_consumption"
     assert data["current_power_w"] == -300
     assert data["next_action"] == "self_consumption"
+    assert data["battery_export_price_policy"] == {
+        "enabled": True,
+        "minimum_price_c_per_kwh": 30.0,
+        "evaluated_price_c_per_kwh": 9.0,
+        "price_allows_battery_export": False,
+        "reason": "below_minimum_price",
+        "scope": "optimizer_battery_export",
+    }
 
 
 def test_api_no_idle_never_publishes_or_executes_residual_idle(opt_module):
@@ -11764,18 +11875,22 @@ def test_export_price_gate_uses_action_timestamp(opt_module):
     assert coordinator._last_executed_action == "export"
 
 
-def test_global_export_floor_uses_real_settlement_price_at_execution(opt_module):
+@pytest.mark.parametrize("previous_action", ["charge", "export"])
+@pytest.mark.parametrize("price", [0.08, None])
+def test_global_export_floor_uses_real_settlement_price_at_execution(
+    opt_module, previous_action, price
+):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
     coordinator.battery_system = "foxess"
     coordinator._config.min_export_price = 0.10
-    coordinator._last_executed_action = "charge"
+    coordinator._last_executed_action = previous_action
     start = datetime(2026, 5, 3, 17, 30, tzinfo=timezone.utc)
     action = SimpleNamespace(action="export", power_w=4200, timestamp=start)
     coordinator._current_schedule = SimpleNamespace(actions=[action])
     coordinator._last_price_timestamps = [start]
     coordinator._last_export_prices = [0.50]
-    coordinator._last_settlement_export_prices = [0.08]
+    coordinator._last_settlement_export_prices = [price]
 
     asyncio.run(coordinator._execute_optimizer_action(action))
 

@@ -11883,6 +11883,40 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as e:
             _LOGGER.error("Failed to execute optimizer action: %s", e)
 
+    def _battery_export_price_status(self, action: Any | None = None) -> dict[str, Any]:
+        """Describe the price gate, independently of solar and execution state."""
+        floor = normalize_min_export_price(
+            getattr(self._config, "min_export_price", 0.0)
+        )
+        prices = (
+            getattr(self, "_last_settlement_export_prices", None)
+            or getattr(self, "_last_export_prices", None)
+        )
+        price = (
+            self._current_effective_export_price_for_action(prices, action)
+            if prices else None
+        )
+        allowed = floor <= 0 or export_price_allows_battery_export(price, floor)
+        if floor <= 0:
+            reason = "disabled"
+        elif price is None or not math.isfinite(price):
+            reason = "price_unavailable"
+        elif not allowed:
+            reason = "below_minimum_price"
+        else:
+            reason = "price_at_or_above_minimum"
+        return {
+            "enabled": floor > 0,
+            "minimum_price_c_per_kwh": round(floor * 100, 3),
+            "evaluated_price_c_per_kwh": (
+                round(price * 100, 6)
+                if price is not None and math.isfinite(price) else None
+            ),
+            "price_allows_battery_export": allowed,
+            "reason": reason,
+            "scope": "optimizer_battery_export",
+        }
+
     def _battery_export_allowed_slots(
         self,
         n: int,
@@ -18673,6 +18707,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         next_action = default_action
         next_action_time = None
         next_action_power_w = 0
+        ca = None
 
         if self._current_schedule and self._current_schedule.actions:
             ca = self._get_current_action()
@@ -18914,6 +18949,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "predicted_savings": self._get_daily_savings(),
             "lp_stats": lp_stats,
             "reserve_recommendation": reserve_recommendation,
+            "battery_export_price_policy": self._battery_export_price_status(ca),
             "profit_max_solar_export": {
                 "capability": dict(
                     getattr(self, "_solar_export_capability_status", {}) or {}
