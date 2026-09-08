@@ -750,6 +750,17 @@ def test_dashboard_ev_panel_is_registered_and_api_cached():
     assert "modesExpanded: this._modesExpanded" in render_signature
 
 
+def test_dashboard_strategy_resource_uses_incremented_cache_buster():
+    """A frontend change must cause Home Assistant to reload the strategy asset."""
+    source = INIT_PATH.read_text()
+    const_source = INIT_PATH.with_name("const.py").read_text()
+
+    version = re.search(r'DASHBOARD_JS_VERSION = "(\d+)"', const_source)
+    assert version is not None
+    assert int(version.group(1)) > 48
+    assert "url = f\"{base_path}?v={POWER_SYNC_VERSION}.{DASHBOARD_JS_VERSION}\"" in source
+
+
 def test_dashboard_ev_modes_are_collapsed_with_enabled_summary():
     """Mode settings should roll up without hiding which automations are enabled."""
     source = STRATEGY_PATH.read_text()
@@ -884,6 +895,63 @@ def test_dashboard_ev_capacity_editor_uses_vehicle_config_api():
     assert "data-capacity-clear" in source
     assert "battery_capacity_kwh: value" in source
     assert "value < 1 || value > 250" in source
+
+
+def test_dashboard_merges_discovered_byd_vehicles_with_capacity_profiles():
+    """BYD discovery stays visible even before a dashboard profile exists."""
+    source = STRATEGY_PATH.read_text()
+    panel_source = source[
+        source.index("class PowerSyncEVPanel extends HTMLElement"):
+        source.index("customElements.define('power-sync-ev-panel'")
+    ]
+
+    assert "vehicles: 'power_sync/ev/vehicles'" in source
+    assert "this._hass.callApi('GET', EV_PANEL_PATHS.vehicles)" in panel_source
+    assert "_bydVehicles()" in panel_source
+    assert "String(vehicle?.brand || '').toLowerCase() === 'byd'" in panel_source
+    assert "configsByVehicleId.get(vehicleId.toLowerCase()) || {}" in panel_source
+    assert "this._bydVehiclesHtml()" in panel_source
+    assert "Charging controls are not available for BYD provider profiles." in panel_source
+    assert "data-capacity-save" in panel_source
+    assert "data-action=\"start\"" not in panel_source[
+        panel_source.index("  _bydVehiclesHtml() {"):
+        panel_source.index("  _delayTimerHtml(")
+    ]
+
+    merge = re.search(
+        r"  _bydVehicles\(\) \{(?P<body>.*?)\n  \}\n\n"
+        r"  _selectedLoadpoint\(\)",
+        panel_source,
+        re.DOTALL,
+    )
+    assert merge is not None
+    runtime = f"""
+      const card = {{
+        _data: {{
+          vehicleConfigs: [{{
+            vehicle_id: 'BYD_device-123',
+            battery_capacity_kwh: 31.2,
+            effective_battery_capacity_kwh: 31.2,
+            battery_capacity_source: 'manual',
+          }}],
+          vehicles: [
+            {{ vehicle_id: 'byd_device-123', brand: 'byd', effective_battery_capacity_kwh: 29.6, battery_capacity_source: 'provider' }},
+            {{ vehicle_id: 'byd_unconfigured', brand: 'byd', effective_battery_capacity_kwh: 82, battery_capacity_source: 'provider' }},
+            {{ vehicle_id: '5YJTEST0000000002', brand: 'tesla' }},
+          ],
+        }},
+        bydVehicles() {{{merge.group('body')}\n  }},
+      }};
+      const vehicles = card.bydVehicles();
+      if (vehicles.length !== 2) throw new Error('BYD discovery was dropped');
+      if (vehicles[0].effective_battery_capacity_kwh !== 31.2 || vehicles[0].battery_capacity_source !== 'manual') {{
+        throw new Error('persisted BYD capacity was not merged by stable ID');
+      }}
+      if (vehicles[1].effective_battery_capacity_kwh !== 82 || vehicles[1].config.battery_capacity_kwh !== undefined) {{
+        throw new Error('unconfigured BYD telemetry was not retained');
+      }}
+    """
+    subprocess.run(["node", "-e", runtime], check=True, capture_output=True, text=True)
 
 
 def test_dashboard_ev_departure_editor_uses_auto_schedule_settings_api():

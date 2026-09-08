@@ -208,6 +208,23 @@ def test_vehicle_capacity_api_regenerates_without_charger_command_and_refreshes_
     assert "_stop_charging(" not in view_source
 
 
+def test_byd_capacity_write_persists_a_provider_only_profile_without_command():
+    """A dashboard capacity write must not make a discovered BYD a Tesla target."""
+    source = INIT_PATH.read_text()
+    start = source.index("class VehicleChargingConfigView")
+    end = source.index("class SolarSurplusConfigView", start)
+    view_source = source[start:end]
+
+    assert 'stable_id.startswith("byd_")' in view_source
+    assert 'data["charger_type"] = "byd"' in view_source
+    assert 'data["provider_only"] = True' in view_source
+    assert '"byd" if stable_id.startswith("byd_") else "tesla"' in view_source
+    assert '"provider_only": data.get(' in view_source
+    assert "_start_charging(" not in view_source
+    assert "_stop_charging(" not in view_source
+    assert "_execute_manual_ev_action(" not in view_source
+
+
 def test_vehicle_config_api_exposes_validates_and_preserves_external_policy():
     source = INIT_PATH.read_text()
     start = source.index("class VehicleChargingConfigView")

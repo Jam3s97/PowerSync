@@ -3974,6 +3974,7 @@ const EV_PANEL_PATHS = {
   autoSettings: 'power_sync/ev/auto_schedule/settings',
   autoToggle: 'power_sync/ev/auto_schedule/toggle',
   vehicleConfig: 'power_sync/ev/vehicle_config',
+  vehicles: 'power_sync/ev/vehicles',
   boost: 'power_sync/ev/boost',
 };
 
@@ -4139,12 +4140,13 @@ class PowerSyncEVPanel extends HTMLElement {
       throw new Error(status.error || 'EV status API unavailable');
     }
 
-    const [solar, price, scheduled, autoStatus, vehicleConfig] = await Promise.allSettled([
+    const [solar, price, scheduled, autoStatus, vehicleConfig, vehicles] = await Promise.allSettled([
       this._hass.callApi('GET', EV_PANEL_PATHS.solar),
       this._hass.callApi('GET', EV_PANEL_PATHS.price),
       this._hass.callApi('GET', EV_PANEL_PATHS.scheduled),
       this._hass.callApi('GET', EV_PANEL_PATHS.autoStatus),
       this._hass.callApi('GET', EV_PANEL_PATHS.vehicleConfig),
+      this._hass.callApi('GET', EV_PANEL_PATHS.vehicles),
     ]);
 
     const modeErrors = [];
@@ -4176,6 +4178,7 @@ class PowerSyncEVPanel extends HTMLElement {
       scheduledSettings: unwrap(scheduled, 'settings', {}),
       autoStatus: autoScheduleStatus,
       vehicleConfigs: unwrap(vehicleConfig, 'configs', []),
+      vehicles: unwrap(vehicles, 'vehicles', []),
       modeErrors,
       fetchedAt: new Date().toISOString(),
     };
@@ -4216,6 +4219,32 @@ class PowerSyncEVPanel extends HTMLElement {
 
   _loadpoints() {
     return Array.isArray(this._data?.status?.loadpoints) ? this._data.status.loadpoints : [];
+  }
+
+  _bydVehicles() {
+    const configsByVehicleId = new Map(
+      (this._data?.vehicleConfigs || []).map((config) => [
+        String(config?.vehicle_id || '').trim().toLowerCase(),
+        config,
+      ]),
+    );
+    return (this._data?.vehicles || [])
+      .filter((vehicle) => String(vehicle?.brand || '').toLowerCase() === 'byd')
+      .map((vehicle) => {
+        const vehicleId = String(vehicle?.vehicle_id || vehicle?.id || '').trim();
+        const config = configsByVehicleId.get(vehicleId.toLowerCase()) || {};
+        return {
+          ...vehicle,
+          vehicle_id: vehicleId,
+          config,
+          effective_battery_capacity_kwh: config.effective_battery_capacity_kwh
+            ?? vehicle.effective_battery_capacity_kwh,
+          battery_capacity_source: config.battery_capacity_source
+            || vehicle.battery_capacity_source
+            || 'default_estimate',
+        };
+      })
+      .filter((vehicle) => vehicle.vehicle_id);
   }
 
   _selectedLoadpoint() {
@@ -4688,6 +4717,39 @@ class PowerSyncEVPanel extends HTMLElement {
           padding: 5px 8px;
           font-size: 11px;
         }
+        .byd-vehicles {
+          display: grid;
+          gap: 8px;
+          margin: 0 0 14px;
+        }
+        .byd-title {
+          color: var(--primary-text-color);
+          font-size: 14px;
+          font-weight: 800;
+        }
+        .byd-subtitle {
+          color: var(--secondary-text-color);
+          font-size: 11px;
+          font-weight: 600;
+          line-height: 1.35;
+        }
+        .byd-vehicle {
+          display: grid;
+          gap: 9px;
+          padding: 10px;
+          border: 1px solid var(--divider-color);
+          border-radius: 8px;
+          background: rgba(127, 127, 127, 0.055);
+        }
+        .byd-vehicle-head {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+          align-items: start;
+        }
+        .byd-metrics {
+          margin: 0;
+        }
         .departure-editor {
           grid-column: 1 / -1;
           padding-top: 8px;
@@ -4772,6 +4834,7 @@ class PowerSyncEVPanel extends HTMLElement {
         ${selected ? this._controlsHtml(loadpoints, selected, canStart, canStop) : ''}
         ${selected && !selected.connected ? this._noticeHtml('warn', 'EV is disconnected. Start is disabled until the charger reports a connected vehicle.') : ''}
         ${conflict ? this._noticeHtml('warn', `${this._title(selected.owner_mode)} currently controls this loadpoint. Manual Start will take over.`) : ''}
+        ${this._bydVehiclesHtml()}
         ${this._modeSectionsHtml()}
       </ha-card>
     `;
@@ -4813,6 +4876,53 @@ class PowerSyncEVPanel extends HTMLElement {
           </div>
         </div>
         <div class="pill ${stateClass}">${this._escHtml(stateText)}</div>
+      </div>
+    `;
+  }
+
+  _bydVehiclesHtml() {
+    const vehicles = this._bydVehicles();
+    if (!vehicles.length) return '';
+    return `
+      <div class="byd-vehicles">
+        <div class="byd-title">BYD vehicles</div>
+        <div class="byd-subtitle">Vehicle telemetry and usable-capacity configuration. Charging controls are not available for BYD provider profiles.</div>
+        ${vehicles.map((vehicle) => this._bydVehicleHtml(vehicle)).join('')}
+      </div>
+    `;
+  }
+
+  _bydVehicleHtml(vehicle) {
+    const vehicleId = vehicle.vehicle_id;
+    const config = vehicle.config || {};
+    const capacity = vehicle.effective_battery_capacity_kwh;
+    const capacitySource = vehicle.battery_capacity_source || 'default_estimate';
+    const manualCapacity = config.battery_capacity_kwh ?? '';
+    const connected = vehicle.is_plugged_in ? 'Plugged in' : 'Unplugged';
+    const charging = vehicle.charging_state || 'Unknown';
+    const online = vehicle.is_online ? 'Online' : 'Offline';
+    return `
+      <div class="byd-vehicle" data-byd-vehicle="${this._escAttr(vehicleId)}">
+        <div class="byd-vehicle-head">
+          <div>
+            <div class="smart-name">${this._escHtml(vehicle.display_name || vehicleId)}</div>
+            <div class="smart-meta">${this._escHtml(vehicle.model || 'BYD')} | ${this._escHtml(online)} | ${this._escHtml(connected)} | ${this._escHtml(charging)}</div>
+          </div>
+          <div class="pill ${vehicle.is_online ? 'on' : 'warn'}">${this._escHtml(online)}</div>
+        </div>
+        <div class="metrics byd-metrics">
+          ${this._metric('SoC', this._soc(vehicle.battery_level))}
+          ${this._metric('Capacity', `${capacity ?? '--'} kWh`)}
+          ${this._metric('Source', this._title(capacitySource))}
+          ${this._metric('State', charging)}
+        </div>
+        <div class="capacity-editor">
+          <label>Capacity override (kWh)
+            <input type="number" min="1" max="250" step="0.1" inputmode="decimal" data-capacity-input="${this._escAttr(vehicleId)}" value="${this._escAttr(manualCapacity)}" placeholder="Automatic">
+          </label>
+          <button class="command" data-capacity-save="${this._escAttr(vehicleId)}" ${this._savingKey ? 'disabled' : ''}>Save</button>
+          <button class="command" data-capacity-clear="${this._escAttr(vehicleId)}" ${this._savingKey || manualCapacity === '' ? 'disabled' : ''}>Clear</button>
+        </div>
       </div>
     `;
   }

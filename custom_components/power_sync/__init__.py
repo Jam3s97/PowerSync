@@ -16926,6 +16926,13 @@ class VehicleChargingConfigView(HomeAssistantView):
                         ),
                     }, status=400)
             stable_id = str(vehicle_id).lower()
+            # A BYD discovered through hass-byd-vehicle is telemetry-only in
+            # this configuration path. Capacity metadata must never turn it
+            # into a Tesla control profile merely because no charger type was
+            # supplied by the dashboard.
+            if stable_id.startswith("byd_"):
+                data["charger_type"] = "byd"
+                data["provider_only"] = True
             anonymous = (
                 charger_type in ("generic", "ocpp")
                 or stable_id.startswith(("generic_", "ocpp_"))
@@ -16980,8 +16987,13 @@ class VehicleChargingConfigView(HomeAssistantView):
                     "charger_type": data.get(
                         "charger_type",
                         "generic" if stable_id.startswith("generic_") else (
-                            "ocpp" if stable_id.startswith("ocpp_") else "tesla"
+                            "ocpp" if stable_id.startswith("ocpp_") else (
+                                "byd" if stable_id.startswith("byd_") else "tesla"
+                            )
                         ),
+                    ),
+                    "provider_only": data.get(
+                        "provider_only", stable_id.startswith("byd_")
                     ),
                     "charger_switch_entity": data.get("charger_switch_entity"),
                     "charger_amps_entity": data.get("charger_amps_entity"),
