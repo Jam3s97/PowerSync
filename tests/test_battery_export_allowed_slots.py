@@ -5805,6 +5805,49 @@ def test_coordinator_refresh_executes_cached_charge_at_action_boundary(opt_modul
     assert coordinator._last_executed_action == "charge"
 
 
+def test_cached_below_floor_export_restores_active_optimizer_force(opt_module, monkeypatch):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator.battery_system = "fronius_reserva"
+    coordinator._enabled = True
+    coordinator._config.min_export_price = 0.30
+    coordinator._optimization_lock = asyncio.Lock()
+    coordinator.get_api_data = lambda: {"ok": True}
+    coordinator._track_actual_cost = lambda: None
+    boundary = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(opt_module.dt_util, "now", lambda: boundary)
+    monkeypatch.setattr(opt_module.dt_util, "utcnow", lambda: boundary)
+    coordinator._current_schedule = SimpleNamespace(actions=[
+        SimpleNamespace(action="export", power_w=4000, timestamp=boundary),
+        SimpleNamespace(
+            action="self_consumption", power_w=0,
+            timestamp=boundary + timedelta(minutes=5),
+        ),
+    ])
+    coordinator._last_price_timestamps = [boundary]
+    coordinator._last_settlement_export_prices = [0.09]
+    coordinator._last_executed_action = "export"
+    coordinator._boundary_execution = {
+        "slot_start": boundary - timedelta(minutes=5),
+        "slot_end": boundary, "action": "export", "was_forced": True,
+    }
+    coordinator._optimizer_force_state = {
+        "active": True, "type": "discharge", "power_w": 4000,
+        "expires_at": boundary + timedelta(minutes=3),
+        "hardware_expires_at": boundary + timedelta(minutes=3),
+        "started_at": boundary - timedelta(minutes=2),
+        "source": "optimizer", "scope": "optimizer",
+    }
+
+    assert asyncio.run(coordinator._async_update_data()) == {"ok": True}
+
+    assert battery.force_discharge_calls == []
+    assert battery.self_consumption_calls == 1
+    assert coordinator._optimizer_force_state["active"] is False
+    assert coordinator._last_executed_planned_action == "export"
+    assert coordinator._last_executed_action == "self_consumption"
+
+
 def test_failed_force_charge_keeps_previous_action_marker_for_retry(opt_module):
     battery = _FakeBattery(force_charge_result=False)
     coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
