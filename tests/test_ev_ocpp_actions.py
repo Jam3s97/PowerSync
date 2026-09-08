@@ -1762,6 +1762,80 @@ def _tesla_entry():
     )
 
 
+def test_tesla_fleet_charge_switch_starts_without_separate_wake_button(monkeypatch):
+    """Fleet's charge switch owns wake-up when only charging scope is granted."""
+    vin = "5YJTEST00000000A1"
+    charge_switch = "switch.model_3_charge"
+    hass = _Hass(
+        [_State(charge_switch, "off")],
+        registry_entities={
+            charge_switch: SimpleNamespace(
+                entity_id=charge_switch,
+                device_id="fleet-car",
+                platform="tesla_fleet",
+            ),
+        },
+        registry_devices={
+            "fleet-car": SimpleNamespace(
+                id="fleet-car",
+                name="Model 3",
+                identifiers={("tesla_fleet", vin)},
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        actions,
+        "_get_ev_config",
+        lambda _entry: {"ev_provider": actions.EV_PROVIDER_FLEET_API},
+    )
+
+    async def unexpected_separate_wake(*_args, **_kwargs):
+        raise AssertionError("official Tesla Fleet Charge must own wake-up")
+
+    monkeypatch.setattr(actions, "_wake_tesla_ev", unexpected_separate_wake)
+
+    assert asyncio.run(
+        actions._action_start_ev_charging(
+            hass,
+            _tesla_entry(),
+            {"charger_type": "tesla", "vehicle_vin": vin},
+        )
+    ) is True
+    assert hass.services.calls == [
+        ("switch", "turn_on", {"entity_id": charge_switch})
+    ]
+
+
+def test_non_fleet_command_keeps_existing_separate_wake_requirement(monkeypatch):
+    command_entity = "switch.teslemetry_charge"
+    hass = _Hass(
+        [_State(command_entity, "off")],
+        registry_entities={
+            command_entity: SimpleNamespace(
+                entity_id=command_entity,
+                device_id="teslemetry-car",
+                platform="teslemetry",
+            ),
+        },
+    )
+    wake_calls: list[tuple[object, object]] = []
+
+    async def wake(hass_arg, vin_arg):
+        wake_calls.append((hass_arg, vin_arg))
+        return False
+
+    monkeypatch.setattr(actions, "_wake_tesla_ev", wake)
+
+    assert asyncio.run(
+        actions._wake_tesla_ev_for_command(
+            hass,
+            "5YJTEST00000000A1",
+            command_entity,
+        )
+    ) is False
+    assert wake_calls == [(hass, "5YJTEST00000000A1")]
+
+
 def test_tesla_preserve_charge_holds_current_soc_with_backup_reserve():
     hass = _Hass([])
     hass.data["power_sync"]["entry-1"]["tesla_coordinator"] = SimpleNamespace(
