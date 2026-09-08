@@ -2964,3 +2964,66 @@ def test_a_powerwall_never_supplies_an_ev_battery_level():
 
     assert soc != 37, "the home battery's SoC was returned as the car's"
     assert soc is None
+
+
+def test_manual_start_uses_healthy_suffixed_provider_for_same_vehicle():
+    """TESSY: unknown Fleet entities must not mask Teslemetry's plugged car."""
+    power_sync = _power_sync_module()
+    vin, other_vin = "5YJTEST0000000001", "5YJTEST0000000002"
+    devices = {
+        name: SimpleNamespace(id=name, name=name, identifiers={(provider, identity)})
+        for name, provider, identity in [
+            ("fleet", "tesla_fleet", vin),
+            ("teslemetry", "teslemetry", vin),
+            ("other", "teslemetry", other_vin),
+        ]
+    }
+    states, registry = [], {}
+    for device, suffix, cable, charging, location in [
+        ("fleet", "", "unknown", "unknown", "unknown"),
+        ("teslemetry", "_2", "on", "stopped", "home"),
+        ("other", "_3", "off", "disconnected", "not_home"),
+    ]:
+        for stem, value in [
+            ("binary_sensor.car_charge_cable", cable),
+            ("sensor.car_charging", charging),
+            ("device_tracker.car_location", location),
+        ]:
+            entity_id = stem + suffix
+            states.append(_State(entity_id, value))
+            registry[entity_id] = SimpleNamespace(entity_id=entity_id, device_id=device)
+    hass = _Hass(states, registry, devices)
+    view = power_sync.EVVehicleCommandView(hass)
+    view._get_powersync_config = lambda: {}
+    assert asyncio.run(view._is_vehicle_plugged_in(vin)) is True
+    assert asyncio.run(view._is_vehicle_at_home(vin)) is True
+    assert asyncio.run(view._is_vehicle_plugged_in(other_vin)) is False
+    assert asyncio.run(view._is_vehicle_at_home(other_vin)) is False
+
+
+def test_manual_start_cannot_borrow_other_vehicles_ble_plug_cache():
+    power_sync = _power_sync_module()
+    vin, other_vin = "5YJTEST0000000001", "5YJTEST0000000002"
+    hass = _Hass([])
+    hass.data["power_sync"]["_ev_cache"] = {
+        "ev_ble_plug_cache_other_bridge": {
+            "is_plugged_in": True,
+            "cached_at": datetime.now(timezone.utc),
+        }
+    }
+    view = power_sync.EVVehicleCommandView(hass)
+    view._get_powersync_config = lambda: {
+        "ev_provider": "both",
+        "tesla_ble_entity_prefix": "target_bridge,other_bridge",
+        "tesla_ble_vehicle_mapping": f"{vin}=target_bridge,{other_vin}=other_bridge",
+    }
+    assert asyncio.run(view._is_vehicle_plugged_in(vin)) is False
+
+    # The exact mapped bridge can supply fresh positive evidence, but neither
+    # a stale entry nor a future timestamp may authorize a start.
+    for age, expected in [(60, True), (7201, False), (-60, False)]:
+        hass.data["power_sync"]["_ev_cache"]["ev_ble_plug_cache_target_bridge"] = {
+            "is_plugged_in": True,
+            "cached_at": datetime.now(timezone.utc) - timedelta(seconds=age),
+        }
+        assert asyncio.run(view._is_vehicle_plugged_in(vin)) is expected

@@ -15382,43 +15382,16 @@ class EVVehicleCommandView(HomeAssistantView):
         return None
 
     async def _get_tesla_ev_entity(self, entity_pattern: str, vehicle_vin: str | None = None) -> str | None:
-        """Find a Tesla EV entity by pattern."""
-        import re
+        """Use the same VIN-scoped provider selection as EV commands."""
+        from .automations.actions import _get_tesla_ev_entity
 
-        entity_registry = er.async_get(self._hass)
-        device_registry = dr.async_get(self._hass)
-
-        # Find devices from Tesla integrations
-        tesla_devices = []
-        for device in iter_device_entries(device_registry):
-            for identifier in device.identifiers:
-                # Handle identifiers with varying tuple lengths
-                if len(identifier) < 2:
-                    continue
-                domain = identifier[0]
-                identifier_value = str(identifier[1])
-                if domain in TESLA_INTEGRATIONS:
-                    if len(identifier_value) == 17 and not identifier_value.isdigit():
-                        _LOGGER.debug(f"Found Tesla device: {device.name} with VIN {identifier_value}, looking for VIN {vehicle_vin}")
-                        if vehicle_vin is None or identifier_value == vehicle_vin:
-                            tesla_devices.append(device)
-                            _LOGGER.debug(f"Added device {device.name} to tesla_devices list")
-                            break
-
-        if not tesla_devices:
-            _LOGGER.debug(f"No Tesla devices found for VIN {vehicle_vin}")
-            return None
-
-        target_device = tesla_devices[0]
-        _LOGGER.debug(f"Using target device: {target_device.name} for pattern {entity_pattern}")
-
-        pattern = re.compile(entity_pattern, re.IGNORECASE)
-        for entity in entity_registry.entities.values():
-            if entity.device_id == target_device.id:
-                if pattern.match(entity.entity_id):
-                    return entity.entity_id
-
-        return None
+        # Home Assistant adds numeric suffixes when multiple integrations
+        # expose one car. The legacy manual patterns predate those entities.
+        if entity_pattern.endswith("$"):
+            entity_pattern = entity_pattern[:-1] + r"(?:_\d+)?$"
+        return await _get_tesla_ev_entity(
+            self._hass, entity_pattern, vehicle_vin, warn_on_missing=False
+        )
 
     async def _is_vehicle_asleep(self, vehicle_vin: str | None = None) -> bool:
         """Check if vehicle is asleep."""
@@ -15608,23 +15581,18 @@ class EVVehicleCommandView(HomeAssistantView):
                     )
                     return False
 
-        # In Fleet+BLE setups, loadpoint status may merge one BLE bridge into the
-        # Fleet vehicle. If there is exactly one fresh BLE plug cache saying the
-        # car is plugged in, treat it as authoritative over stale Fleet binaries.
+        # Only the bridge explicitly paired with this vehicle may supply
+        # cached plug evidence. A single cache entry can belong to the other
+        # car after an HA restart or when one bridge is out of range.
+        ble_prefix = _ble_prefix_for_vehicle(
+            self._hass, self._get_powersync_config(), vehicle_vin
+        )
         ble_cache = self._hass.data.get(DOMAIN, {}).get("_ev_cache", {})
-        fresh_ble_plug_states = [
-            cached.get("is_plugged_in")
-            for key, cached in ble_cache.items()
-            if key.startswith("ev_ble_plug_cache_")
-            and cached.get("cached_at")
-            and (dt_util.utcnow() - cached["cached_at"]).total_seconds() < 7200
-        ]
-        if len(fresh_ble_plug_states) == 1 and fresh_ble_plug_states[0] is True:
-            _LOGGER.debug(
-                "Vehicle plugged in from single fresh BLE plug cache despite %s reporting unplugged",
-                negative_binary_evidence or "no Fleet plug binary",
-            )
-            return True
+        cached = ble_cache.get(f"ev_ble_plug_cache_{ble_prefix}") if ble_prefix else None
+        if cached and cached.get("cached_at"):
+            age = (dt_util.utcnow() - cached["cached_at"]).total_seconds()
+            if 0 <= age < 7200 and cached.get("is_plugged_in") is True:
+                return True
 
         if negative_binary_evidence:
             _LOGGER.debug(

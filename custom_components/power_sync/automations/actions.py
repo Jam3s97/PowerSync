@@ -38,7 +38,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import entity_registry as er, device_registry as dr
 from homeassistant.helpers.event import async_track_time_interval, async_track_point_in_time
-from datetime import timedelta, datetime, time as dt_time
+from datetime import timedelta, datetime, timezone as dt_timezone, time as dt_time
 from homeassistant.util import dt as dt_util
 
 from ..const import (
@@ -55,7 +55,8 @@ from ..const import (
     TESLA_BLE_NUMBER_CHARGING_LIMIT,
     TESLA_BLE_BUTTON_WAKE_UP,
     TESLA_BLE_BINARY_ASLEEP,
-    TESLA_BLE_BINARY_STATUS,
+    TESLA_BLE_SENSOR_CHARGING_STATE,
+    TESLA_BLE_SENSOR_CHARGING,
     TESLEMETRY_BT_SWITCH_CHARGE,
     TESLEMETRY_BT_NUMBER_CHARGE_AMPS,
 )
@@ -697,6 +698,8 @@ async def _get_tesla_ev_entity(
     def _device_has_ev_entities(device_id: str) -> bool:
         """Check if device has EV-specific entities."""
         for entity in entity_registry.entities.values():
+            if getattr(entity, "disabled_by", None):
+                continue
             if entity.device_id == device_id:
                 for marker in ev_marker_patterns:
                     if marker.search(entity.entity_id):
@@ -805,6 +808,8 @@ async def _get_tesla_ev_entity(
         if device_id:
             entities_by_device[device_id] = []
     for entity in entity_registry.entities.values():
+        if getattr(entity, "disabled_by", None):
+            continue
         if entity.device_id in entities_by_device:
             entities_by_device[entity.device_id].append(entity.entity_id)
 
@@ -1146,6 +1151,7 @@ def _tesla_start_confirmation_entity_ids(
         entity_ids.update(
             {
                 f"sensor.{paired_prefix}_charging_state",
+                f"sensor.{paired_prefix}_charging",
                 f"sensor.{paired_prefix}_charge_current",
                 f"sensor.{paired_prefix}_charger_current",
                 f"sensor.{paired_prefix}_charger_actual_current",
@@ -1996,6 +2002,72 @@ def _is_ble_available(hass: HomeAssistant, ble_prefix: str) -> bool:
     return state is not None and state.state != "unavailable"
 
 
+_TESLA_BLE_COMMAND_CONFIRMATION_SECONDS = 10
+_TESLA_BLE_WAKE_FRESHNESS_SECONDS = 120
+
+
+def _ble_state_observed_after(state: Any, since: datetime) -> bool:
+    """Require an actual HA observation, not a restored or missing value."""
+    observed = getattr(state, "last_reported", None) or getattr(state, "last_updated", None)
+    if not isinstance(observed, datetime):
+        return False
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=dt_timezone.utc)
+    return since <= observed <= datetime.now(dt_timezone.utc)
+
+
+async def _wait_for_ble_command_readback(
+    hass: HomeAssistant,
+    entity_id: str | tuple[str, ...],
+    expected: str | float,
+    command_started_at: datetime,
+    *,
+    charging_prefix: str | None = None,
+) -> bool:
+    """Confirm a BLE write from fresh vehicle state, plus draw for a start."""
+    from ..tesla_ble import get_tesla_ble_charge_current_state, get_tesla_ble_charge_power_state
+
+    entity_ids = (entity_id,) if isinstance(entity_id, str) else entity_id
+    deadline = asyncio.get_running_loop().time() + _TESLA_BLE_COMMAND_CONFIRMATION_SECONDS
+    while True:
+        for candidate in entity_ids:
+            state = hass.states.get(candidate)
+            if state is None or not _ble_state_observed_after(state, command_started_at):
+                continue
+            value = str(state.state).strip().lower()
+            if isinstance(expected, str):
+                matches = value == expected.lower()
+            else:
+                try:
+                    matches = math.isfinite(float(value)) and abs(float(value) - expected) < 0.1
+                except (TypeError, ValueError):
+                    matches = False
+            if not matches:
+                continue
+            if charging_prefix is None:
+                return True
+            # Writable amperage limits and bridge switches are not measured
+            # charging. Both supported sensor aliases remain prefix-scoped.
+            current = get_tesla_ble_charge_current_state(hass, charging_prefix)
+            power = get_tesla_ble_charge_power_state(hass, charging_prefix)
+            for measured, minimum in ((current, 0.1), (power, 50.0)):
+                if measured is None or not _ble_state_observed_after(measured, command_started_at):
+                    continue
+                try:
+                    observed_value = float(measured.state)
+                    if measured is power and measured.attributes.get("unit_of_measurement") == "kW":
+                        observed_value *= 1000
+                    if math.isfinite(observed_value) and observed_value >= minimum:
+                        return True
+                except (TypeError, ValueError):
+                    continue
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            _LOGGER.warning("Tesla BLE command not confirmed by fresh vehicle readback from %s", entity_ids)
+            return False
+        await asyncio.sleep(min(1, remaining))
+
+
 async def _wake_tesla_ble(hass: HomeAssistant, ble_prefix: str, wait_timeout: int = 30) -> bool:
     """Wake up Tesla via BLE and wait for it to be awake.
 
@@ -2014,11 +2086,22 @@ async def _wake_tesla_ble(hass: HomeAssistant, ble_prefix: str, wait_timeout: in
         _LOGGER.warning(f"Tesla BLE wake entity not found: {wake_entity}")
         return False
 
-    # Check if already awake
+    # Bridge availability/discovery is not vehicle wake acknowledgement.
+    # A recent vehicle observation can avoid an unnecessary wake request.
     asleep_state = hass.states.get(asleep_entity)
-    if asleep_state and asleep_state.state == "off":
-        _LOGGER.debug("Tesla BLE: Car is already awake")
+    if (
+        asleep_state and asleep_state.state == "off"
+        and _ble_state_observed_after(
+            asleep_state,
+            datetime.now(dt_timezone.utc) - timedelta(seconds=_TESLA_BLE_WAKE_FRESHNESS_SECONDS),
+        )
+    ):
+        hass.data.get(DOMAIN, {}).get("_ev_ble_wake_retry_after", {}).pop(ble_prefix, None)
         return True
+    retry_after = hass.data.setdefault(DOMAIN, {}).setdefault("_ev_ble_wake_retry_after", {})
+    if asyncio.get_running_loop().time() < retry_after.get(ble_prefix, 0):
+        return False
+    wake_started_at = datetime.now(dt_timezone.utc)
 
     try:
         await hass.services.async_call(
@@ -2035,53 +2118,63 @@ async def _wake_tesla_ble(hass: HomeAssistant, ble_prefix: str, wait_timeout: in
             await asyncio.sleep(2)
 
             asleep_state = hass.states.get(asleep_entity)
-            if asleep_state and asleep_state.state == "off":
+            if (
+                asleep_state and asleep_state.state == "off"
+                and _ble_state_observed_after(asleep_state, wake_started_at)
+            ):
                 _LOGGER.info(f"Tesla BLE: Car is now awake after {int(asyncio.get_event_loop().time() - start_time)}s")
                 # Give it a bit more time to be fully ready
                 await asyncio.sleep(2)
                 return True
 
-            # Also check status entity as fallback
-            status_entity = TESLA_BLE_BINARY_STATUS.format(prefix=ble_prefix)
-            status_state = hass.states.get(status_entity)
-            if status_state and status_state.state == "on":
-                _LOGGER.info(f"Tesla BLE: Car is online after {int(asyncio.get_event_loop().time() - start_time)}s")
-                await asyncio.sleep(2)
-                return True
-
-        _LOGGER.warning(f"Tesla BLE: Timed out waiting for car to wake after {wait_timeout}s")
-        # Still return True to attempt the command anyway
-        return True
+        # Do not spend another full wake timeout on the same failed bridge
+        # during the following amps/start operation. Other cars are unaffected.
+        retry_after[ble_prefix] = asyncio.get_running_loop().time() + 60
+        _LOGGER.warning(f"Tesla BLE: Timed out waiting for confirmed vehicle wake after {wait_timeout}s")
+        return False
     except Exception as e:
         _LOGGER.error(f"Failed to wake Tesla via BLE: {e}")
         return False
 
 
-async def _start_ev_charging_ble(hass: HomeAssistant, ble_prefix: str) -> bool:
-    """Start EV charging via Tesla BLE."""
+async def _start_ev_charging_ble(hass: HomeAssistant, ble_prefix: str) -> Optional[bool]:
+    """Return True if confirmed, False before dispatch, None if unconfirmed."""
     charger_entity = TESLA_BLE_SWITCH_CHARGER.format(prefix=ble_prefix)
 
     if hass.states.get(charger_entity) is None:
         _LOGGER.error(f"Tesla BLE charger entity not found: {charger_entity}")
         return False
 
+    command_dispatched = False
     try:
-        await _wake_tesla_ble(hass, ble_prefix)
+        if not await _wake_tesla_ble(hass, ble_prefix):
+            return False
+        command_started_at = datetime.now(dt_timezone.utc)
+        hass.data.setdefault(DOMAIN, {}).setdefault("_ev_ble_start_dispatched_at", {})[ble_prefix] = command_started_at
+        command_dispatched = True
         await hass.services.async_call(
             "switch",
             "turn_on",
             {"entity_id": charger_entity},
             blocking=True,
         )
-        _LOGGER.info(f"Started EV charging via Tesla BLE: {charger_entity}")
-        return True
+        confirmed = await _wait_for_ble_command_readback(
+            hass, (
+                TESLA_BLE_SENSOR_CHARGING_STATE.format(prefix=ble_prefix),
+                TESLA_BLE_SENSOR_CHARGING.format(prefix=ble_prefix),
+            ),
+            "charging", command_started_at, charging_prefix=ble_prefix,
+        )
+        return True if confirmed else None
     except Exception as e:
         err_str = str(e).lower()
         if "complete" in err_str:
             _LOGGER.info(f"EV charging is complete (at target SOC) via BLE — skipping start")
         else:
             _LOGGER.error(f"Failed to start EV charging via BLE: {e}")
-        return False
+        if type(e).__name__ in {"ServiceNotFound", "ServiceValidationError"}:
+            return False
+        return None if command_dispatched else False
 
 
 async def _stop_ev_charging_ble(hass: HomeAssistant, ble_prefix: str) -> bool:
@@ -2109,7 +2202,7 @@ async def _stop_ev_charging_ble(hass: HomeAssistant, ble_prefix: str) -> bool:
 
 async def _set_ev_charge_limit_ble(
     hass: HomeAssistant, ble_prefix: str, percent: int
-) -> bool:
+) -> Optional[bool]:
     """Set EV charge limit via Tesla BLE."""
     limit_entity = TESLA_BLE_NUMBER_CHARGING_LIMIT.format(prefix=ble_prefix)
 
@@ -2117,19 +2210,27 @@ async def _set_ev_charge_limit_ble(
         _LOGGER.error(f"Tesla BLE charge limit entity not found: {limit_entity}")
         return False
 
+    command_dispatched = False
     try:
-        await _wake_tesla_ble(hass, ble_prefix)
+        if not await _wake_tesla_ble(hass, ble_prefix):
+            return False
+        command_started_at = datetime.now(dt_timezone.utc)
+        command_dispatched = True
         await hass.services.async_call(
             "number",
             "set_value",
             {"entity_id": limit_entity, "value": percent},
             blocking=True,
         )
-        _LOGGER.info(f"Set EV charge limit to {percent}% via Tesla BLE: {limit_entity}")
-        return True
+        confirmed = await _wait_for_ble_command_readback(
+            hass, limit_entity, float(percent), command_started_at
+        )
+        return True if confirmed else None
     except Exception as e:
         _LOGGER.error(f"Failed to set EV charge limit via BLE: {e}")
-        return False
+        if type(e).__name__ in {"ServiceNotFound", "ServiceValidationError"}:
+            return False
+        return None if command_dispatched else False
 
 
 async def _set_ev_charging_amps_ble(
@@ -2140,7 +2241,7 @@ async def _set_ev_charging_amps_ble(
     allow_stale_entity_max_override: bool = False,
     configured_max_amps: Optional[int] = None,
     params: Optional[dict] = None,
-) -> bool:
+) -> Optional[bool]:
     """Set EV charging amps via Tesla BLE."""
     amps_entity = TESLA_BLE_NUMBER_CHARGING_AMPS.format(prefix=ble_prefix)
 
@@ -2173,16 +2274,22 @@ async def _set_ev_charging_amps_ble(
     if capped_amps != amps:
         _LOGGER.debug(f"BLE amps capped from {amps}A to {capped_amps}A (entity range: {entity_min}-{entity_max})")
 
+    command_dispatched = False
     try:
-        await _wake_tesla_ble(hass, ble_prefix)
+        if not await _wake_tesla_ble(hass, ble_prefix):
+            return False
+        command_started_at = datetime.now(dt_timezone.utc)
+        command_dispatched = True
         await hass.services.async_call(
             "number",
             "set_value",
             {"entity_id": amps_entity, "value": capped_amps},
             blocking=True,
         )
-        _LOGGER.info(f"Set EV charging amps to {capped_amps}A via Tesla BLE: {amps_entity}")
-        return True
+        confirmed = await _wait_for_ble_command_readback(
+            hass, amps_entity, float(capped_amps), command_started_at
+        )
+        return True if confirmed else None
     except Exception as e:
         fallback_amps = None
         if _is_number_range_error(str(e)):
@@ -2206,6 +2313,10 @@ async def _set_ev_charging_amps_ble(
                     fallback_amps,
                     amps_entity,
                 )
+                if not await _wait_for_ble_command_readback(
+                    hass, amps_entity, float(fallback_amps), command_started_at
+                ):
+                    return None
                 if params is not None:
                     params["max_charge_amps"] = fallback_amps
                     params["_tesla_entity_range_fallback_amps"] = fallback_amps
@@ -2217,7 +2328,9 @@ async def _set_ev_charging_amps_ble(
                     fallback_error,
                 )
         _LOGGER.error(f"Failed to set EV charging amps via BLE: {e}")
-        return False
+        if type(e).__name__ in {"ServiceNotFound", "ServiceValidationError"}:
+            return False
+        return None if command_dispatched else False
 
 
 # =============================================================================
@@ -4689,7 +4802,48 @@ async def _action_start_ev_charging(
     # Prefer the free, explicitly paired ESPHome BLE control path.
     if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
         if _is_ble_available(hass, ble_prefix):
+            hass.data.setdefault(DOMAIN, {}).setdefault("_ev_ble_start_dispatched_at", {}).pop(ble_prefix, None)
+            command_started_at = datetime.now(dt_timezone.utc)
             result = await _start_ev_charging_ble(hass, ble_prefix)
+            if result is None:
+                # A sent BLE command can start charging after its local
+                # readback times out. Settle it through the existing VIN-scoped
+                # confirmation/compensation path, never a second start provider.
+                command_started_at = hass.data.get(DOMAIN, {}).get(
+                    "_ev_ble_start_dispatched_at", {}
+                ).get(ble_prefix, command_started_at)
+                # Rebaseline after the local wait: a value that merely
+                # appeared while waking is not proof of the later start write.
+                baseline = _tesla_physical_charging_snapshot(
+                    hass, config_entry, vehicle_vin, params
+                )
+                stop_params = {
+                    **params, "vehicle_vin": vehicle_vin,
+                    "_force_tesla_stop_request": True,
+                }
+                try:
+                    # Dynamic sessions normally apply their initial rate after
+                    # start. A car with a zero prior rate needs that permitted
+                    # target before physical draw can be confirmed here.
+                    if params.get("amps") is not None:
+                        await _action_set_ev_charging_amps(hass, config_entry, params)
+                    confirmed, evidence = await _wait_for_tesla_physical_start(
+                        hass, config_entry, vehicle_vin, params,
+                        baseline, command_started_at,
+                    )
+                except asyncio.CancelledError:
+                    await asyncio.shield(_action_stop_ev_charging(
+                        hass, config_entry, stop_params
+                    ))
+                    raise
+                if not confirmed:
+                    stopped = await _action_stop_ev_charging(hass, config_entry, stop_params)
+                    _LOGGER.warning(
+                        "Tesla BLE start unconfirmed (%s); exact-vehicle compensating stop accepted=%s",
+                        evidence, stopped,
+                    )
+                    return False
+                result = True
             if result:
                 charging_started = True
             elif ev_provider == EV_PROVIDER_TESLA_BLE:
@@ -5050,6 +5204,8 @@ async def _action_set_ev_charge_limit(
     if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
         if _is_ble_available(hass, ble_prefix):
             result = await _set_ev_charge_limit_ble(hass, ble_prefix, percent)
+            if result is None:
+                return False
             if result or ev_provider == EV_PROVIDER_TESLA_BLE:
                 return result
 
@@ -5186,6 +5342,8 @@ async def _action_set_ev_charging_amps(
                 configured_max_amps=configured_max_amps,
                 params=params,
             )
+            if result is None:
+                return False
             range_fallback_applied = (
                 params.get("_tesla_entity_range_fallback_amps") is not None
             )

@@ -338,7 +338,8 @@ class _Hass:
         self.states = _States(states)
         self.services = _Services()
         self.entity_registry = SimpleNamespace(entities=registry_entities or {})
-        self.device_registry = SimpleNamespace(devices=registry_devices or {})
+        devices = registry_devices or {}
+        self.device_registry = SimpleNamespace(devices=devices, async_get=devices.get)
 
 
 class _Entry:
@@ -7863,6 +7864,14 @@ def test_tesla_ble_set_amps_honors_entity_positive_floor(monkeypatch):
         _State("number.car_charging_amps", "1", {"min": 0, "max": 32}),
     ])
 
+    original_call = hass.services.async_call
+    async def confirmed_call(domain, service, data, **kwargs):
+        await original_call(domain, service, data, **kwargs)
+        state = hass.states.get(data["entity_id"])
+        state.state = str(data["value"])
+        state.last_updated = datetime.now(timezone.utc)
+    hass.services.async_call = confirmed_call
+
     result = asyncio.run(
         actions._action_set_ev_charging_amps(
             hass,
@@ -7891,6 +7900,14 @@ def test_tesla_ble_set_amps_uses_safe_floor_without_proven_bounds(monkeypatch):
     hass = _Hass([
         _State("number.car_charging_amps", "1", {"max": 32}),
     ])
+
+    original_call = hass.services.async_call
+    async def confirmed_call(domain, service, data, **kwargs):
+        await original_call(domain, service, data, **kwargs)
+        state = hass.states.get(data["entity_id"])
+        state.state = str(data["value"])
+        state.last_updated = datetime.now(timezone.utc)
+    hass.services.async_call = confirmed_call
 
     result = asyncio.run(
         actions._action_set_ev_charging_amps(
@@ -8093,6 +8110,10 @@ def test_exact_wall_connector_range_fallback_continues_to_vin_provider(monkeypat
                     "Value 32.0 for number.teslable_charging_amps is outside "
                     "valid range 0.0 - 15.0"
                 )
+            if data.get("entity_id") == "number.teslable_charging_amps":
+                state = hass.states.get(data["entity_id"])
+                state.state = str(data["value"])
+                state.last_updated = datetime.now(timezone.utc)
 
     monkeypatch.setattr(
         actions,
@@ -10022,7 +10043,7 @@ def test_automation_stop_context_routes_to_charging_ble_tesla():
             _State("sensor.tesla_flinn_charging", "stopped"),
             _State("sensor.tesla_yf88_charging_state", "Charging"),
             _State("binary_sensor.tesla_yf88_ble_status", "on"),
-            _State("binary_sensor.tesla_yf88_asleep", "off"),
+            _State("binary_sensor.tesla_yf88_asleep", "off", last_updated=datetime.now(timezone.utc)),
             _State("button.tesla_yf88_wake_up", "unknown"),
             _State("switch.tesla_yf88_charger", "on"),
         ],
@@ -11110,3 +11131,265 @@ def test_sigenergy_solar_surplus_adds_back_the_live_charger_draw():
     # amps at zero after a reload, only an available reading recovers it.
     assert actions._effective_ev_power_kw(0.0, 1.46, True) == 1.46
     assert actions._effective_ev_power_kw(0.0, 0.0, False) == 0.0
+
+
+def test_ble_wake_does_not_accept_bridge_status_as_vehicle_awake():
+    hass = _Hass([
+        _State("button.car_wake_up", "unknown"),
+        _State("binary_sensor.car_asleep", "on"),
+        _State("binary_sensor.car_status", "on"),
+        _State("binary_sensor.car_ble_status", "on"),
+    ])
+    assert asyncio.run(actions._wake_tesla_ble(hass, "car", wait_timeout=0)) is False
+
+
+def test_ble_start_does_not_send_charge_after_failed_wake(monkeypatch):
+    async def failed_wake(*args, **kwargs):
+        return False
+    monkeypatch.setattr(actions, "_wake_tesla_ble", failed_wake)
+    hass = _Hass([_State("switch.car_charger", "off")])
+    assert asyncio.run(actions._start_ev_charging_ble(hass, "car")) is False
+    assert hass.services.calls == []
+
+
+@pytest.mark.parametrize("telemetry", ["Unknown", "Charging"])
+def test_ble_start_requires_fresh_vehicle_readback(monkeypatch, telemetry):
+    """Neither a service acknowledgement nor stale charging is success."""
+    async def awake(*args, **kwargs):
+        return True
+    monkeypatch.setattr(actions, "_wake_tesla_ble", awake)
+    monkeypatch.setattr(actions, "_TESLA_BLE_COMMAND_CONFIRMATION_SECONDS", 0, raising=False)
+    hass = _Hass([
+        _State("switch.car_charger", "off"),
+        _State("sensor.car_charging_state", telemetry,
+               last_updated=datetime.now(timezone.utc) - timedelta(hours=1)),
+        _State("sensor.other_charging_state", "Charging",
+               last_updated=datetime.now(timezone.utc)),
+    ])
+    assert asyncio.run(actions._start_ev_charging_ble(hass, "car")) is None
+    assert hass.services.calls == [("switch", "turn_on", {"entity_id": "switch.car_charger"})]
+
+
+@pytest.mark.parametrize("state_suffix", ["charging_state", "charging"])
+@pytest.mark.parametrize("draw", [0, 16])
+def test_ble_start_accepts_fresh_vehicle_charging_state(monkeypatch, state_suffix, draw):
+    async def awake(*args, **kwargs):
+        return True
+    monkeypatch.setattr(actions, "_wake_tesla_ble", awake)
+    monkeypatch.setattr(actions, "_TESLA_BLE_COMMAND_CONFIRMATION_SECONDS", 0, raising=False)
+    hass = _Hass([_State("switch.car_charger", "off")])
+    async def confirmed_call(domain, service, data, **kwargs):
+        hass.states._states[f"sensor.car_{state_suffix}"] = _State(
+            f"sensor.car_{state_suffix}", "Charging", last_updated=datetime.now(timezone.utc)
+        )
+        hass.states._states["sensor.car_charge_current"] = _State(
+            "sensor.car_charge_current", str(draw), last_updated=datetime.now(timezone.utc)
+        )
+    hass.services.async_call = confirmed_call
+    assert asyncio.run(actions._start_ev_charging_ble(hass, "car")) is (True if draw else None)
+
+
+@pytest.mark.parametrize("kind", ["amps", "limit"])
+def test_ble_number_commands_do_not_send_after_failed_wake(monkeypatch, kind):
+    async def failed_wake(*args, **kwargs):
+        return False
+    monkeypatch.setattr(actions, "_wake_tesla_ble", failed_wake)
+    hass = _Hass([
+        _State("number.car_charging_amps", "unknown", {"min": 1, "max": 32}),
+        _State("number.car_charging_limit", "unknown"),
+    ])
+    func = actions._set_ev_charging_amps_ble if kind == "amps" else actions._set_ev_charge_limit_ble
+    assert asyncio.run(func(hass, "car", 16 if kind == "amps" else 70)) is False
+    assert hass.services.calls == []
+
+
+@pytest.mark.parametrize("kind", ["amps", "limit"])
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_ble_number_command_requires_matching_readback(monkeypatch, kind, confirmed):
+    async def awake(*args, **kwargs):
+        return True
+    monkeypatch.setattr(actions, "_wake_tesla_ble", awake)
+    monkeypatch.setattr(actions, "_TESLA_BLE_COMMAND_CONFIRMATION_SECONDS", 0)
+    entity_id = f"number.car_charging_{kind}"
+    value = 16 if kind == "amps" else 70
+    hass = _Hass([_State(entity_id, "unknown", {"min": 1, "max": 32})])
+    async def write(domain, service, data, **kwargs):
+        hass.states._states[entity_id] = _State(
+            entity_id, str(value if confirmed else value - 1),
+            last_updated=datetime.now(timezone.utc),
+        )
+    hass.services.async_call = write
+    func = actions._set_ev_charging_amps_ble if kind == "amps" else actions._set_ev_charge_limit_ble
+    assert asyncio.run(func(hass, "car", value)) is (True if confirmed else None)
+
+
+@pytest.mark.parametrize("wake_confirmed", [False, True])
+@pytest.mark.parametrize("settled", [False, True])
+def test_both_mode_ble_start_distinguishes_preflight_and_unconfirmed_write(monkeypatch, wake_confirmed, settled):
+    """Only a failed preflight permits immediate same-VIN provider fallback."""
+    vin, other_vin = "5YJTEST0000000001", "5YJTEST0000000002"
+    entry = SimpleNamespace(entry_id="entry-1", data={}, options={
+        "ev_provider": "both", "tesla_ev_api_provider": "none",
+        "tesla_ble_entity_prefix": "car,other",
+        "tesla_ble_vehicle_mapping": f"{vin}=car,{other_vin}=other",
+    })
+    devices = {
+        name: SimpleNamespace(id=name, name=name, identifiers={(provider, identity)})
+        for name, provider, identity in [
+            ("fleet", "tesla_fleet", vin),
+            ("healthy", "teslemetry", vin),
+            ("other", "teslemetry", other_vin),
+        ]
+    }
+    registry = {
+        entity: SimpleNamespace(entity_id=entity, device_id=device)
+        for entity, device in [
+            ("switch.car_charge", "fleet"),
+            ("switch.car_charge_2", "healthy"),
+            ("switch.other_charge", "other"),
+        ]
+    }
+    hass = _Hass([
+        _State("switch.car_charger", "off"),
+        _State("sensor.car_charging_state", "Unknown"),
+        _State("switch.car_charge", "unknown"),
+        _State("switch.car_charge_2", "off"),
+        _State("switch.other_charge", "off"),
+    ], registry, devices)
+    async def awake(*args, **kwargs):
+        return True
+    async def ble_awake(*args, **kwargs):
+        return wake_confirmed
+    async def unconfirmed(*args, **kwargs):
+        assert args[2] == vin
+        assert args[5] == hass.data["power_sync"]["_ev_ble_start_dispatched_at"]["car"]
+        return settled, "physical confirmation result"
+    stops = []
+    async def scoped_stop(_hass, _entry, params, *args, **kwargs):
+        stops.append(params)
+        return True
+    monkeypatch.setattr(actions, "_wait_for_tesla_physical_start", unconfirmed)
+    monkeypatch.setattr(actions, "_action_stop_ev_charging", scoped_stop)
+    monkeypatch.setattr(actions, "_wake_tesla_ble", ble_awake)
+    monkeypatch.setattr(actions, "_wake_tesla_ev_for_command", awake)
+    monkeypatch.setattr(actions, "_resolve_teslemetry_bt_prefix", lambda *args: None)
+    monkeypatch.setattr(actions, "_is_api_credit_available", lambda *args: True)
+    monkeypatch.setattr(actions, "_TESLA_BLE_COMMAND_CONFIRMATION_SECONDS", 0)
+    assert asyncio.run(actions._action_start_ev_charging(
+        hass, entry, {"vehicle_vin": vin, "charger_type": "tesla"}, {}
+    )) is (not wake_confirmed or settled)
+    expected_entity = "switch.car_charger" if wake_confirmed else "switch.car_charge_2"
+    assert hass.services.calls == [
+        ("switch", "turn_on", {"entity_id": expected_entity}),
+    ]
+
+    assert len(stops) == int(wake_confirmed and not settled)
+    if stops:
+        assert stops[0]["vehicle_vin"] == vin
+        assert stops[0]["_force_tesla_stop_request"] is True
+
+
+def test_failed_ble_wake_cooldown_is_bridge_scoped():
+    hass = _Hass([
+        _State(f"button.{prefix}_wake_up", "unknown") for prefix in ("car", "other")
+    ])
+    async def check():
+        assert not await actions._wake_tesla_ble(hass, "car", wait_timeout=0)
+        assert not await actions._wake_tesla_ble(hass, "car", wait_timeout=0)
+        assert not await actions._wake_tesla_ble(hass, "other", wait_timeout=0)
+    asyncio.run(check())
+    assert hass.services.calls == [
+        ("button", "press", {"entity_id": "button.car_wake_up"}),
+        ("button", "press", {"entity_id": "button.other_wake_up"}),
+    ]
+
+
+def test_tesla_entity_lookup_ignores_disabled_provider_entities():
+    vin = "5YJTEST0000000001"
+    hass = _Hass([
+        _State("switch.car_charge", "on"),
+        _State("switch.car_charge_2", "off"),
+    ], {
+        "a": SimpleNamespace(entity_id="switch.car_charge", device_id="a", disabled_by="user"),
+        "b": SimpleNamespace(entity_id="switch.car_charge_2", device_id="b"),
+    }, {
+        key: SimpleNamespace(id=key, identifiers={(provider, vin)})
+        for key, provider in [("a", "tesla_fleet"), ("b", "teslemetry")]
+    })
+    assert asyncio.run(actions._get_tesla_ev_entity(
+        hass, r"switch\..*charge(?:_\d+)?$", vin
+    )) == "switch.car_charge_2"
+
+
+@pytest.mark.parametrize("kind", ["amps", "limit"])
+def test_both_mode_unconfirmed_ble_number_does_not_fall_through(monkeypatch, kind):
+    vin = "5YJTEST0000000001"
+    entry = SimpleNamespace(entry_id="entry-1", data={}, options={
+        "ev_provider": "both", "tesla_ble_entity_prefix": "car",
+        "tesla_ble_vehicle_mapping": f"{vin}=car",
+    })
+    hass = _Hass([
+        _State("switch.car_charger", "off"),
+        _State(f"number.car_charging_{kind}", "unknown", {"min": 1, "max": 32}),
+    ])
+    async def awake(*args, **kwargs):
+        return True
+    async def unexpected_fallback(*args, **kwargs):
+        raise AssertionError("An unconfirmed BLE write must not fall through")
+    monkeypatch.setattr(actions, "_wake_tesla_ble", awake)
+    monkeypatch.setattr(actions, "_TESLA_BLE_COMMAND_CONFIRMATION_SECONDS", 0)
+    monkeypatch.setattr(actions, "_get_tesla_ev_entity", unexpected_fallback)
+    value = 16 if kind == "amps" else 70
+    action = actions._action_set_ev_charging_amps if kind == "amps" else actions._action_set_ev_charge_limit
+    params = {"vehicle_vin": vin, "charger_type": "tesla", "amps": value, "percent": value}
+    assert asyncio.run(action(hass, entry, params)) is False
+    assert len(hass.services.calls) == 1
+
+
+@pytest.mark.parametrize("kind", ["start", "amps", "limit"])
+@pytest.mark.parametrize("validation_error", [False, True])
+def test_ble_dispatch_exception_is_indeterminate(monkeypatch, kind, validation_error):
+    async def awake(*args, **kwargs):
+        return True
+    async def timed_out(*args, **kwargs):
+        if validation_error:
+            raise type("ServiceValidationError", (Exception,), {})("Entity cannot accept service")
+        raise TimeoutError("HA service timed out after dispatch")
+    monkeypatch.setattr(actions, "_wake_tesla_ble", awake)
+    hass = _Hass([
+        _State("switch.car_charger", "off"),
+        _State("number.car_charging_amps", "16", {"min": 1, "max": 32}),
+        _State("number.car_charging_limit", "70"),
+    ])
+    hass.services.async_call = timed_out
+    if kind == "start":
+        result = asyncio.run(actions._start_ev_charging_ble(hass, "car"))
+    else:
+        func = actions._set_ev_charging_amps_ble if kind == "amps" else actions._set_ev_charge_limit_ble
+        result = asyncio.run(func(hass, "car", 16 if kind == "amps" else 70))
+    assert result is (False if validation_error else None)
+
+
+def test_cancelled_ble_start_confirmation_compensates_exact_vehicle(monkeypatch):
+    vin = "5YJTEST0000000001"
+    hass = _Hass([_State("switch.car_charger", "off")])
+    entry = SimpleNamespace(entry_id="entry-1", data={}, options={
+        "ev_provider": "both", "tesla_ble_entity_prefix": "car",
+        "tesla_ble_vehicle_mapping": f"{vin}=car",
+    })
+    async def accepted_without_readback(*args, **kwargs):
+        return None
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError
+    stops = []
+    async def stop(_hass, _entry, params, *args, **kwargs):
+        stops.append(params)
+        return True
+    monkeypatch.setattr(actions, "_start_ev_charging_ble", accepted_without_readback)
+    monkeypatch.setattr(actions, "_wait_for_tesla_physical_start", cancelled)
+    monkeypatch.setattr(actions, "_action_stop_ev_charging", stop)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(actions._action_start_ev_charging(hass, entry, {"vehicle_vin": vin}))
+    assert len(stops) == 1
+    assert stops[0]["vehicle_vin"] == vin
+    assert stops[0]["_force_tesla_stop_request"] is True
