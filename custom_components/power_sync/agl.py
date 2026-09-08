@@ -15,6 +15,76 @@ _BASE_TARIFF_KEY = "agl_base_tariff"
 _METADATA_KEY = "agl_battery_rewards"
 
 
+def build_ausgrid_seasonal_import_periods(
+    *,
+    summer_offpeak_rate: float,
+    summer_peak_rate: float,
+    winter_offpeak_rate: float,
+    winter_peak_rate: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return authored seasonal import periods for the opt-in Ausgrid plan.
+
+    AGL offers are account-specific, so this helper deliberately accepts the
+    prices from the user's configured plan instead of publishing a rate table.
+    The returned rows use the existing custom-tariff schema and can therefore
+    be edited or persisted through the normal tariff path.
+    """
+    rates = (
+        summer_offpeak_rate,
+        summer_peak_rate,
+        winter_offpeak_rate,
+        winter_peak_rate,
+    )
+    if any(not 0 <= float(rate) <= 2 for rate in rates):
+        raise ValueError("Ausgrid import rates must be between 0 and 2 $/kWh")
+
+    seasons = [
+        {"name": "Summer", "from_month": 11, "to_month": 3},
+        {"name": "Winter", "from_month": 4, "to_month": 10},
+    ]
+    # The peak definition is authored separately per season so the tariff-time
+    # lookup selects it by each locally-timestamped optimizer slot.
+    periods = [
+        {
+            "name": "PEAK",
+            "season": "Summer",
+            "start": 14,
+            "end": 20,
+            "days": "weekdays",
+            "import_rate": float(summer_peak_rate),
+            "export_rate": 0.0,
+        },
+        {
+            "name": "OFF_PEAK",
+            "season": "Summer",
+            "start": 0,
+            "end": 24,
+            "days": "all_days",
+            "import_rate": float(summer_offpeak_rate),
+            "export_rate": 0.0,
+        },
+        {
+            "name": "PEAK",
+            "season": "Winter",
+            "start": 17,
+            "end": 21,
+            "days": "weekdays",
+            "import_rate": float(winter_peak_rate),
+            "export_rate": 0.0,
+        },
+        {
+            "name": "OFF_PEAK",
+            "season": "Winter",
+            "start": 0,
+            "end": 24,
+            "days": "all_days",
+            "import_rate": float(winter_offpeak_rate),
+            "export_rate": 0.0,
+        },
+    ]
+    return seasons, periods
+
+
 def _days_in_range(start: int, end: int) -> list[int]:
     """Expand an inclusive Home Assistant weekday range."""
     start %= 7

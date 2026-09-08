@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import hashlib
 import json
 import logging
 import math
@@ -19200,6 +19201,36 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 api_response["grid_export_w"] = grid_export_w
             # Add price arrays for pricing overlay (use actual tariff rates, not LP-adjusted)
             n_sched = len(api_response["timestamps"])
+            # A schedule and its forecast arrays are one immutable optimizer
+            # snapshot for explanation purposes.  The digest is generated
+            # server-side and is checked again by ai_summary before it exposes
+            # a per-window forecast-to-plan association.
+            snapshot_payload = {
+                "generated_at": (
+                    self._last_update_time.isoformat()
+                    if self._last_update_time is not None
+                    else None
+                ),
+                "schedule": {
+                    key: api_response.get(key)
+                    for key in (
+                        "timestamps",
+                        "charge_w",
+                        "discharge_w",
+                        "ev_charging_w",
+                        "battery_consume_w",
+                        "battery_export_w",
+                        "soc",
+                        "control_source",
+                        "control_action",
+                        "action_reason",
+                    )
+                },
+            }
+            plan_snapshot_id = hashlib.sha256(
+                json.dumps(snapshot_payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+            ).hexdigest()
+            api_response["plan_snapshot_id"] = plan_snapshot_id
             provenance = (
                 getattr(self, "_last_raw_solar_forecast", None),
                 getattr(self, "_last_planned_solar_forecast", None),
@@ -19213,6 +19244,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     and len(raw) == len(planned) == len(curtailed) == len(load)
                     == n_sched
                 ):
+                    # Keep the existing chart series, and provide a smaller
+                    # server-stamped contract for AI explanations.  Do not
+                    # expose either object when provenance is incomplete.
                     data["forecast_series"] = {
                         "timestamps": list(api_response["timestamps"]),
                         "interval_minutes": self._config.interval_minutes,
@@ -19220,6 +19254,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "planned_forecast_values_kw": planned,
                         "curtailment_values_kw": curtailed,
                         "load_forecast_values_kw": load,
+                    }
+                    data["forecast_evidence"] = {
+                        "plan_snapshot_id": plan_snapshot_id,
+                        "timestamps": list(api_response["timestamps"]),
+                        "solar_forecast_values_kw": list(planned),
+                        "load_forecast_values_kw": list(load),
                     }
             display_import = self._last_display_import_prices or self._last_import_prices
             display_export = self._last_display_export_prices or self._last_export_prices

@@ -3746,6 +3746,59 @@ class PowerSyncAIPlanExplanation extends HTMLElement {
     return [time, action, item.reason.trim()].filter(Boolean).join(' — ');
   }
 
+  _appendForecastEvidence(parent, evidence) {
+    if (!evidence || typeof evidence !== 'object') return;
+    const block = document.createElement('section');
+    const heading = document.createElement('h4');
+    heading.textContent = 'Verified forecast evidence';
+    block.append(heading);
+    if (evidence.status === 'unavailable') {
+      const notice = document.createElement('p');
+      notice.className = 'notice';
+      notice.textContent = 'Forecast evidence is unavailable for this plan snapshot.';
+      block.append(notice);
+      parent.append(block);
+      return;
+    }
+    if (evidence.status === 'changed' || evidence.changed_since_last_explained) {
+      const notice = document.createElement('p');
+      notice.className = 'notice';
+      notice.textContent = 'Forecast data changed since the last explanation. These values belong to the displayed plan snapshot.';
+      block.append(notice);
+    }
+    const rows = [];
+    for (const window of Array.isArray(evidence.windows) ? evidence.windows : []) {
+      const values = Array.isArray(window?.values) ? window.values : [];
+      if (!values.length) continue;
+      const label = this._timelineText({ start: window.start, end: window.end, action: window.action || '', reason: '' })
+        .split(' — ').filter(Boolean).slice(0, 2).join(' — ');
+      const slots = values.map((slot) => {
+        const time = new Date(slot?.timestamp);
+        const renderedTime = Number.isNaN(time.getTime()) ? '' : time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const solar = Number(slot?.solar_kw);
+        const load = Number(slot?.load_kw);
+        if (!Number.isFinite(solar) || !Number.isFinite(load)) return null;
+        return `${renderedTime ? `${renderedTime}: ` : ''}solar ${solar.toFixed(2)} kW, load ${load.toFixed(2)} kW`;
+      }).filter(Boolean);
+      if (slots.length) rows.push([label, slots.join('; ')].filter(Boolean).join(' — '));
+    }
+    if (rows.length) {
+      const list = document.createElement('ul');
+      for (const row of rows) {
+        const item = document.createElement('li');
+        item.textContent = row;
+        list.append(item);
+      }
+      block.append(list);
+    } else {
+      const notice = document.createElement('p');
+      notice.className = 'notice';
+      notice.textContent = 'Forecast evidence is unavailable for this plan snapshot.';
+      block.append(notice);
+    }
+    parent.append(block);
+  }
+
   _renderContent(body) {
     const summary = this._summary || {};
     const badges = document.createElement('div');
@@ -3794,6 +3847,7 @@ class PowerSyncAIPlanExplanation extends HTMLElement {
       ? summary.important_actions
       : summary.action_explanations;
     this._appendList(body, 'Optional timeline', timeline, (item) => this._timelineText(item));
+    this._appendForecastEvidence(body, summary.forecast_evidence);
     this._appendList(body, 'What may change', summary.caveats, (item) => typeof item === 'string' ? item : null);
     if (typeof summary.generated_at === 'string') {
       const generated = document.createElement('p');

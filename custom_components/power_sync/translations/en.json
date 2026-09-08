@@ -19,14 +19,24 @@
       },
       "agl": {
         "title": "AGL Battery Rewards",
-        "description": "PowerSync models AGL as a static retail tariff. Enter the total feed-in rates and supply charge from your current offer; the evening rate applies every day from 17:00 to 21:00. AGL VPP events are separate and are not controlled by this supplier integration.",
-        "data": {
+      "description": "PowerSync models AGL as a static retail tariff. You can opt in to the configured Ausgrid seasonal TOU import schedule, then enter the rates and supply charge shown on your address-specific offer, or retain manual tariff entry. The evening feed-in rate applies every day from 17:00 to 21:00. AGL VPP events are separate and are not controlled by this supplier integration.",
+      "data": {
+        "agl_import_schedule": "Import tariff setup",
+        "agl_summer_offpeak_import_rate": "Summer off-peak import rate",
+        "agl_summer_peak_import_rate": "Summer weekday peak import rate",
+        "agl_winter_offpeak_import_rate": "Winter off-peak import rate",
+        "agl_winter_peak_import_rate": "Winter weekday peak import rate",
           "agl_battery_rewards_peak_export_rate": "17:00-21:00 feed-in tariff",
           "agl_battery_rewards_offpeak_export_rate": "Off-peak feed-in tariff",
           "daily_supply_charge": "Daily supply charge ($)",
           "monthly_supply_charge": "Monthly supply charge ($)"
         },
-        "data_description": {
+      "data_description": {
+        "agl_import_schedule": "Automatic Ausgrid seasonal TOU is opt-in. Manual entry leaves your existing custom tariff workflow unchanged.",
+        "agl_summer_offpeak_import_rate": "Enter the cents/kWh rate from your configured AGL/Ausgrid offer (November through March).",
+        "agl_summer_peak_import_rate": "Enter the weekday 14:00-20:00 cents/kWh rate from your configured offer (November through March).",
+        "agl_winter_offpeak_import_rate": "Enter the cents/kWh rate from your configured AGL/Ausgrid offer (April through October).",
+        "agl_winter_peak_import_rate": "Enter the weekday 17:00-21:00 cents/kWh rate from your configured offer (April through October).",
           "agl_battery_rewards_peak_export_rate": "Total export rate, not a bonus added to the off-peak rate. AGL currently advertises 28c/kWh; confirm your offer.",
           "agl_battery_rewards_offpeak_export_rate": "Export rate outside 17:00-21:00. AGL currently advertises 3c/kWh; confirm your offer.",
           "daily_supply_charge": "Fixed daily supply charge from your current AGL offer. This is also used by demand-charge cost tracking.",
@@ -1412,14 +1422,24 @@
       },
       "agl_options": {
         "title": "AGL Battery Rewards",
-        "description": "Update the total AGL feed-in rates and supply charge from your current offer. PowerSync applies the evening rate every day from 17:00 to 21:00, then opens your address-specific import tariff for review.",
-        "data": {
+      "description": "Update your AGL offer details and supply charge. Automatic Ausgrid seasonal TOU is opt-in and saves the configured seasonal import periods; manual tariff entry remains available. PowerSync applies the evening feed-in rate every day from 17:00 to 21:00.",
+      "data": {
+        "agl_import_schedule": "Import tariff setup",
+        "agl_summer_offpeak_import_rate": "Summer off-peak import rate",
+        "agl_summer_peak_import_rate": "Summer weekday peak import rate",
+        "agl_winter_offpeak_import_rate": "Winter off-peak import rate",
+        "agl_winter_peak_import_rate": "Winter weekday peak import rate",
           "agl_battery_rewards_peak_export_rate": "17:00-21:00 feed-in tariff",
           "agl_battery_rewards_offpeak_export_rate": "Off-peak feed-in tariff",
           "daily_supply_charge": "Daily supply charge ($)",
           "monthly_supply_charge": "Monthly supply charge ($)"
         },
-        "data_description": {
+      "data_description": {
+        "agl_import_schedule": "Automatic Ausgrid seasonal TOU is opt-in. Manual entry leaves your existing custom tariff workflow unchanged.",
+        "agl_summer_offpeak_import_rate": "Enter the cents/kWh rate from your configured AGL/Ausgrid offer (November through March).",
+        "agl_summer_peak_import_rate": "Enter the weekday 14:00-20:00 cents/kWh rate from your configured offer (November through March).",
+        "agl_winter_offpeak_import_rate": "Enter the cents/kWh rate from your configured AGL/Ausgrid offer (April through October).",
+        "agl_winter_peak_import_rate": "Enter the weekday 17:00-21:00 cents/kWh rate from your configured offer (April through October).",
           "agl_battery_rewards_peak_export_rate": "Total export rate, not a bonus added to the off-peak rate. AGL currently advertises 28c/kWh; confirm your offer.",
           "agl_battery_rewards_offpeak_export_rate": "Export rate outside 17:00-21:00. AGL currently advertises 3c/kWh; confirm your offer.",
           "daily_supply_charge": "Fixed daily supply charge from your current AGL offer. This is also used by demand-charge cost tracking.",

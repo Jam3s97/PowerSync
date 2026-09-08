@@ -271,6 +271,14 @@ from .const import (
     CONF_ELECTRICITY_PROVIDER,
     CONF_AGL_BATTERY_REWARDS_PEAK_EXPORT_RATE,
     CONF_AGL_BATTERY_REWARDS_OFFPEAK_EXPORT_RATE,
+    CONF_AGL_IMPORT_SCHEDULE,
+    CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE,
+    CONF_AGL_SUMMER_PEAK_IMPORT_RATE,
+    CONF_AGL_WINTER_OFFPEAK_IMPORT_RATE,
+    CONF_AGL_WINTER_PEAK_IMPORT_RATE,
+    AGL_IMPORT_SCHEDULE_AUSGRID_SEASONAL,
+    AGL_IMPORT_SCHEDULE_MANUAL,
+    AGL_IMPORT_SCHEDULES,
     DEFAULT_AGL_BATTERY_REWARDS_PEAK_EXPORT_RATE,
     DEFAULT_AGL_BATTERY_REWARDS_OFFPEAK_EXPORT_RATE,
     CONF_FLOW_POWER_STATE,
@@ -6664,15 +6672,52 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_AGL_BATTERY_REWARDS_OFFPEAK_EXPORT_RATE: offpeak_rate,
                 CONF_DAILY_SUPPLY_CHARGE: daily_supply_charge,
                 CONF_MONTHLY_SUPPLY_CHARGE: monthly_supply_charge,
+                CONF_AGL_IMPORT_SCHEDULE: user_input.get(
+                    CONF_AGL_IMPORT_SCHEDULE, AGL_IMPORT_SCHEDULE_MANUAL
+                ),
             }
             self._agl_peak_export_rate = peak_rate
             self._agl_offpeak_export_rate = offpeak_rate
+            self._agl_import_schedule = user_input.get(
+                CONF_AGL_IMPORT_SCHEDULE, AGL_IMPORT_SCHEDULE_MANUAL
+            )
+            if self._agl_import_schedule == AGL_IMPORT_SCHEDULE_AUSGRID_SEASONAL:
+                from .agl import build_ausgrid_seasonal_import_periods
+
+                self._tariff_seasons, periods = build_ausgrid_seasonal_import_periods(
+                    summer_offpeak_rate=float(user_input[CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE]) / 100,
+                    summer_peak_rate=float(user_input[CONF_AGL_SUMMER_PEAK_IMPORT_RATE]) / 100,
+                    winter_offpeak_rate=float(user_input[CONF_AGL_WINTER_OFFPEAK_IMPORT_RATE]) / 100,
+                    winter_peak_rate=float(user_input[CONF_AGL_WINTER_PEAK_IMPORT_RATE]) / 100,
+                )
+                self._tariff_plan_name = "AGL / Ausgrid Seasonal TOU"
+                self._tariff_offpeak_rate = float(user_input[CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE]) / 100
+                self._tariff_fit_rate = offpeak_rate / 100
+                self._custom_tariff_data = self._build_tariff_from_periods(periods)
+                self._agl_data.update({
+                    CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE: user_input[CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE],
+                    CONF_AGL_SUMMER_PEAK_IMPORT_RATE: user_input[CONF_AGL_SUMMER_PEAK_IMPORT_RATE],
+                    CONF_AGL_WINTER_OFFPEAK_IMPORT_RATE: user_input[CONF_AGL_WINTER_OFFPEAK_IMPORT_RATE],
+                    CONF_AGL_WINTER_PEAK_IMPORT_RATE: user_input[CONF_AGL_WINTER_PEAK_IMPORT_RATE],
+                })
+                return await self.async_step_battery_system()
             return await self.async_step_custom_tariff()
 
         return self.async_show_form(
             step_id="agl",
             data_schema=vol.Schema(
                 {
+                    vol.Required(
+                        CONF_AGL_IMPORT_SCHEDULE,
+                        default=AGL_IMPORT_SCHEDULE_MANUAL,
+                    ): SelectSelector(SelectSelectorConfig(
+                        options=[SelectOptionDict(value=key, label=label) for key, label in AGL_IMPORT_SCHEDULES.items()],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )),
+                    vol.Optional(CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE, default=20.0): NumberSelector(NumberSelectorConfig(min=0, max=200, step=0.01, unit_of_measurement=self._selector_unit(), mode=NumberSelectorMode.BOX)),
+                    vol.Optional(CONF_AGL_SUMMER_PEAK_IMPORT_RATE, default=35.0): NumberSelector(NumberSelectorConfig(min=0, max=200, step=0.01, unit_of_measurement=self._selector_unit(), mode=NumberSelectorMode.BOX)),
+                    vol.Optional(CONF_AGL_WINTER_OFFPEAK_IMPORT_RATE, default=20.0): NumberSelector(NumberSelectorConfig(min=0, max=200, step=0.01, unit_of_measurement=self._selector_unit(), mode=NumberSelectorMode.BOX)),
+                    vol.Optional(CONF_AGL_WINTER_PEAK_IMPORT_RATE, default=35.0): NumberSelector(NumberSelectorConfig(min=0, max=200, step=0.01, unit_of_measurement=self._selector_unit(), mode=NumberSelectorMode.BOX)),
                     vol.Required(
                         CONF_AGL_BATTERY_REWARDS_PEAK_EXPORT_RATE,
                         default=DEFAULT_AGL_BATTERY_REWARDS_PEAK_EXPORT_RATE,
@@ -13836,19 +13881,106 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             )
             self._agl_peak_export_rate = peak_rate
             self._agl_offpeak_export_rate = offpeak_rate
+            import_schedule = user_input.get(
+                CONF_AGL_IMPORT_SCHEDULE,
+                self._get_option(
+                    CONF_AGL_IMPORT_SCHEDULE, AGL_IMPORT_SCHEDULE_MANUAL
+                ),
+            )
             self._amber_options = {
                 CONF_ELECTRICITY_PROVIDER: "agl",
                 CONF_AGL_BATTERY_REWARDS_PEAK_EXPORT_RATE: peak_rate,
                 CONF_AGL_BATTERY_REWARDS_OFFPEAK_EXPORT_RATE: offpeak_rate,
                 CONF_DAILY_SUPPLY_CHARGE: daily_supply_charge,
                 CONF_MONTHLY_SUPPLY_CHARGE: monthly_supply_charge,
+                CONF_AGL_IMPORT_SCHEDULE: import_schedule,
             }
+            if import_schedule == AGL_IMPORT_SCHEDULE_AUSGRID_SEASONAL:
+                from .agl import build_ausgrid_seasonal_import_periods
+
+                rate_keys = (
+                    CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE,
+                    CONF_AGL_SUMMER_PEAK_IMPORT_RATE,
+                    CONF_AGL_WINTER_OFFPEAK_IMPORT_RATE,
+                    CONF_AGL_WINTER_PEAK_IMPORT_RATE,
+                )
+                rates = {
+                    key: float(user_input.get(key, self._get_option(key, 20.0)))
+                    for key in rate_keys
+                }
+                self._tariff_seasons, periods = build_ausgrid_seasonal_import_periods(
+                    summer_offpeak_rate=rates[CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE] / 100,
+                    summer_peak_rate=rates[CONF_AGL_SUMMER_PEAK_IMPORT_RATE] / 100,
+                    winter_offpeak_rate=rates[CONF_AGL_WINTER_OFFPEAK_IMPORT_RATE] / 100,
+                    winter_peak_rate=rates[CONF_AGL_WINTER_PEAK_IMPORT_RATE] / 100,
+                )
+                self._tariff_plan_name = "AGL / Ausgrid Seasonal TOU"
+                self._tariff_offpeak_rate = rates[CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE] / 100
+                self._tariff_fit_rate = offpeak_rate / 100
+                self._amber_options.update(rates)
+                await self._save_custom_tariff(
+                    self._build_tariff_from_periods_compat(periods)
+                )
+                return await self.async_step_demand_charge_options()
             return await self.async_step_custom_tariff_options()
 
         return self.async_show_form(
             step_id="agl_options",
             data_schema=vol.Schema(
                 {
+                    vol.Required(
+                        CONF_AGL_IMPORT_SCHEDULE,
+                        default=self._get_option(
+                            CONF_AGL_IMPORT_SCHEDULE,
+                            AGL_IMPORT_SCHEDULE_MANUAL,
+                        ),
+                    ): SelectSelector(SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=key, label=label)
+                            for key, label in AGL_IMPORT_SCHEDULES.items()
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )),
+                    vol.Optional(
+                        CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE,
+                        default=self._get_option(
+                            CONF_AGL_SUMMER_OFFPEAK_IMPORT_RATE, 20.0
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0, max=200, step=0.01,
+                        unit_of_measurement=self._selector_unit(),
+                        mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Optional(
+                        CONF_AGL_SUMMER_PEAK_IMPORT_RATE,
+                        default=self._get_option(
+                            CONF_AGL_SUMMER_PEAK_IMPORT_RATE, 35.0
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0, max=200, step=0.01,
+                        unit_of_measurement=self._selector_unit(),
+                        mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Optional(
+                        CONF_AGL_WINTER_OFFPEAK_IMPORT_RATE,
+                        default=self._get_option(
+                            CONF_AGL_WINTER_OFFPEAK_IMPORT_RATE, 20.0
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0, max=200, step=0.01,
+                        unit_of_measurement=self._selector_unit(),
+                        mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Optional(
+                        CONF_AGL_WINTER_PEAK_IMPORT_RATE,
+                        default=self._get_option(
+                            CONF_AGL_WINTER_PEAK_IMPORT_RATE, 35.0
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0, max=200, step=0.01,
+                        unit_of_measurement=self._selector_unit(),
+                        mode=NumberSelectorMode.BOX,
+                    )),
                     vol.Required(
                         CONF_AGL_BATTERY_REWARDS_PEAK_EXPORT_RATE,
                         default=self._get_option(

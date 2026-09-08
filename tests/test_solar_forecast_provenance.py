@@ -107,3 +107,6 @@ def test_api_contract_is_schedule_aligned_and_additive():
     assert '"load_forecast_values_kw": load' in api_source
     assert "len(raw) == len(planned) == len(curtailed) == len(load)" in api_source
     assert "== n_sched" in api_source
+    assert 'api_response["plan_snapshot_id"] = plan_snapshot_id' in api_source
+    assert 'data["forecast_evidence"]' in api_source
+    assert '"plan_snapshot_id": plan_snapshot_id' in api_source

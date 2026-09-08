@@ -296,6 +296,7 @@ def test_context_distinguishes_soft_missing_inputs_from_unusable_plan():
     assert context["missing_inputs"] == [
         "cost_and_energy_summary",
         "export_prices",
+        "forecast_evidence",
         "forecast_summary",
         "import_prices",
     ]
@@ -343,6 +344,54 @@ def test_v2_prompt_is_provider_neutral_decision_first_and_descriptive_only():
     assert "supplied currency and" in module.SYSTEM_PROMPT
     assert "Gemini" not in module.SYSTEM_PROMPT
     assert "Grok" not in module.SYSTEM_PROMPT
+
+
+def test_forecast_evidence_requires_exact_schedule_snapshot_and_complete_slots():
+    module = _load_module()
+    snapshot = _snapshot()
+    snapshot["schedule"]["plan_snapshot_id"] = "plan-a"
+    snapshot["forecast_evidence"] = {
+        "plan_snapshot_id": "plan-a",
+        "timestamps": list(snapshot["schedule"]["timestamps"]),
+        "solar_forecast_values_kw": [1.0, 1.5, 2.0, 1.0],
+        "load_forecast_values_kw": [0.8, 1.1, 1.4, 0.7],
+    }
+
+    context = module.build_compact_context(snapshot)
+    evidence = context["forecast_evidence"]
+    assert evidence["status"] == "available"
+    assert evidence["windows"][0]["values"] == [
+        {"timestamp": "2026-08-01T12:00:00+10:00", "solar_kw": 1.0, "load_kw": 0.8},
+        {"timestamp": "2026-08-01T12:30:00+10:00", "solar_kw": 1.5, "load_kw": 1.1},
+    ]
+
+    snapshot["forecast_evidence"]["plan_snapshot_id"] = "other-plan"
+    assert module.build_compact_context(snapshot)["forecast_evidence"] == {
+        "status": "unavailable", "reason": "plan_mismatch", "windows": [],
+    }
+
+    snapshot["forecast_evidence"]["plan_snapshot_id"] = "plan-a"
+    snapshot["forecast_evidence"]["load_forecast_values_kw"].pop()
+    assert module.build_compact_context(snapshot)["forecast_evidence"] == {
+        "status": "unavailable", "reason": "incomplete_or_misaligned", "windows": [],
+    }
+
+
+def test_forecast_evidence_marks_changed_values_without_model_provenance():
+    module = _load_module()
+    current = {
+        "status": "available",
+        "plan_snapshot_id": "current",
+        "windows": [{"window_id": "w0", "values": [{"solar_kw": 2.0, "load_kw": 1.0}]}],
+    }
+    previous = {
+        "status": "available",
+        "plan_snapshot_id": "previous",
+        "windows": [{"window_id": "w0", "values": [{"solar_kw": 1.0, "load_kw": 1.0}]}],
+    }
+    result = module.forecast_evidence_for_display(current, previous)
+    assert result["status"] == "changed"
+    assert result["changed_since_last_explained"] is True
 
 
 def test_verified_feedback_reports_observed_changes_without_invented_cause():

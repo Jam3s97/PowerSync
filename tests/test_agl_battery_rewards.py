@@ -241,6 +241,50 @@ def test_reapplying_rates_is_idempotent_and_uses_original_import_tariff(
     assert updated["agl_base_tariff"] == original
 
 
+def test_opt_in_ausgrid_schedule_preserves_each_seasons_import_prices(
+    agl_module,
+):
+    seasons, periods = agl_module.build_ausgrid_seasonal_import_periods(
+        summer_offpeak_rate=0.21,
+        summer_peak_rate=0.51,
+        winter_offpeak_rate=0.19,
+        winter_peak_rate=0.47,
+    )
+
+    assert seasons == [
+        {"name": "Summer", "from_month": 11, "to_month": 3},
+        {"name": "Winter", "from_month": 4, "to_month": 10},
+    ]
+    assert [
+        (period["season"], period["name"], period["import_rate"])
+        for period in periods
+    ] == [
+        ("Summer", "PEAK", 0.51),
+        ("Summer", "OFF_PEAK", 0.21),
+        ("Winter", "PEAK", 0.47),
+        ("Winter", "OFF_PEAK", 0.19),
+    ]
+
+    # The same user-entered import values survive the Battery Rewards overlay.
+    tariff = {
+        "seasons": {
+            "Summer": {"fromMonth": 11, "toMonth": 3, "tou_periods": {
+                "OFF_PEAK": [{"fromDayOfWeek": 0, "toDayOfWeek": 6, "fromHour": 0, "toHour": 24}],
+            }},
+            "Winter": {"fromMonth": 4, "toMonth": 10, "tou_periods": {
+                "OFF_PEAK": [{"fromDayOfWeek": 0, "toDayOfWeek": 6, "fromHour": 0, "toHour": 24}],
+            }},
+        },
+        "energy_charges": {"Summer": {"OFF_PEAK": 0.21}, "Winter": {"OFF_PEAK": 0.19}},
+        "sell_tariff": {"energy_charges": {"Summer": {"OFF_PEAK": 0.03}, "Winter": {"OFF_PEAK": 0.03}}},
+    }
+    overlaid = agl_module.apply_battery_rewards_export_rates(
+        tariff, peak_export_rate=0.28, offpeak_export_rate=0.03,
+    )
+    assert overlaid["energy_charges"]["Summer"]["OFF_PEAK"] == 0.21
+    assert overlaid["energy_charges"]["Winter"]["OFF_PEAK"] == 0.19
+
+
 @pytest.mark.parametrize(
     ("peak", "offpeak"),
     [(-0.01, 0.03), (2.01, 0.03), (0.28, -0.01), (0.28, 2.01)],
