@@ -6581,9 +6581,9 @@ class PowerSyncStrategy {
     }
 
     // --- Center Column: Power Flow ---
-    if (hasTeslaFlow && hasE('solar_power')) {
+    if (hasTeslaFlow && hasEntityE('solar_power')) {
       center.push(_teslaStyleFlow(e, hass, findSensor));
-    } else if (hasFlowCard && hasE('solar_power')) {
+    } else if (hasFlowCard && hasEntityE('solar_power')) {
       center.push(_powerFlow(e));
     }
 

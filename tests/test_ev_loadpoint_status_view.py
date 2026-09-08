@@ -76,7 +76,7 @@ def test_loadpoint_status_preserves_curtailed_site_state_for_surplus_calculation
     snapshot = _get_site_snapshot_method()
     snapshot_source = ast.unparse(snapshot)
 
-    assert "coordinator.data.get('is_curtailed', False) is True" in snapshot_source
+    assert "data.get('is_curtailed', False) is True" in snapshot_source
     assert "'is_curtailed': is_curtailed" in snapshot_source
 
     method_source = ast.unparse(_get_method())
@@ -139,6 +139,51 @@ def test_loadpoint_site_snapshot_preserves_unavailable_home_load():
 
     coordinator.data["load_power"] = 0.0
     assert site_snapshot(view)["load_power_kw"] == 0.0
+
+
+def test_loadpoint_site_snapshot_keeps_stale_core_telemetry_unavailable():
+    """Ticket-39: stale coordinator data is not a measured zero-valued site."""
+    site_snapshot = _extract_site_snapshot()
+    coordinator = SimpleNamespace(
+        data={
+            "solar_power": 7.27,
+            "grid_power": -0.1,
+            "battery_power": 1.2,
+            "load_power": 1.5,
+            "battery_level": 53,
+            "telemetry_ready": False,
+        },
+    )
+    view = SimpleNamespace(
+        _hass=SimpleNamespace(
+            data={"power_sync": {"entry-1": {"sungrow_coordinator": coordinator}}},
+        ),
+        _config_entry=SimpleNamespace(entry_id="entry-1"),
+    )
+
+    snapshot = site_snapshot(view)
+    assert snapshot["solar_power_kw"] is None
+    assert snapshot["grid_power_kw"] is None
+    assert snapshot["battery_power_kw"] is None
+    assert snapshot["load_power_kw"] is None
+    assert snapshot["battery_soc"] is None
+
+    coordinator.data["telemetry_ready"] = True
+    coordinator.data.update(
+        solar_power=0.0,
+        grid_power=0.0,
+        battery_power=0.0,
+        load_power=0.0,
+        battery_level=0.0,
+    )
+    assert site_snapshot(view) == {
+        "battery_soc": 0.0,
+        "solar_power_kw": 0.0,
+        "grid_power_kw": 0.0,
+        "battery_power_kw": 0.0,
+        "load_power_kw": 0.0,
+        "is_curtailed": False,
+    }
 
 
 def test_hacs_ocpp_discovery_is_enabled_and_claim_filtered():

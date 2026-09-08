@@ -145,6 +145,53 @@ def test_energy_flow_keeps_unavailable_home_load_unknown():
     subprocess.run(["node", "-e", f"{helper.group(0)}\n{checks}"], check=True)
 
 
+def test_energy_flow_keeps_unavailable_core_telemetry_distinct_from_zero():
+    """Ticket-39: a visible card must not render unavailable site values as zero."""
+    source = ENERGY_FLOW_PATH.read_text()
+    watt_helper = re.search(
+        r"function toOptionalWatt\([^)]*\) \{.*?\n  \}", source, re.DOTALL
+    )
+    safe_num_helper = re.search(
+        r"function safeNum\([^)]*\) \{.*?\n  \}", source, re.DOTALL
+    )
+    clamp_helper = re.search(
+        r"function clamp\([^)]*\) \{.*?\n  \}", source, re.DOTALL
+    )
+    pct_helper = re.search(
+        r"function toOptionalPct\([^)]*\) \{.*?\n  \}", source, re.DOTALL
+    )
+    assert watt_helper is not None
+    assert safe_num_helper is not None
+    assert clamp_helper is not None
+    assert pct_helper is not None
+    dynamic = source[source.index("_renderDynamic()") :]
+    assert "&& (!batteryConfigured || Number.isFinite(batteryPower));" in dynamic
+    assert "if (!coreTelemetryKnown)" in dynamic
+    assert "this._setText('#flow-solar-power', Number.isFinite(solarPower) ? this._formatKW(solarPower) : '--');" in dynamic
+    assert "this._setText('#flow-grid-power', Number.isFinite(gridPower) ? this._formatKW(gridPower) : '--');" in dynamic
+
+    checks = """
+      const unavailable = { state: 'unavailable', attributes: {} };
+      const unknown = { state: 'unknown', attributes: {} };
+      const zeroW = { state: '0', attributes: { unit_of_measurement: 'W' } };
+      const zeroPct = { state: '0', attributes: {} };
+      for (const entity of [unavailable, unknown]) {
+        if (toOptionalWatt(entity) !== null) throw new Error(`power ${entity.state}`);
+        if (toOptionalPct(entity) !== null) throw new Error(`pct ${entity.state}`);
+      }
+      if (toOptionalWatt(zeroW) !== 0) throw new Error('measured 0 W lost');
+      if (toOptionalPct(zeroPct) !== 0) throw new Error('measured 0% lost');
+    """
+    subprocess.run(
+        [
+            "node",
+            "-e",
+            f"{safe_num_helper.group(0)}\n{clamp_helper.group(0)}\n{watt_helper.group(0)}\n{pct_helper.group(0)}\n{checks}",
+        ],
+        check=True,
+    )
+
+
 def test_energy_flow_grid_status_requires_known_state():
     source = ENERGY_FLOW_PATH.read_text()
     assert (

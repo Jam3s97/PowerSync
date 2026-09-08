@@ -33,6 +33,14 @@ def test_button_card_resource_fallback_accepts_dashed_hacs_url():
     assert "url.includes(name)" in source
 
 
+def test_energy_flow_card_stays_present_for_an_unavailable_solar_entity():
+    """Ticket-39: entity availability must not remove the diagnostic flow card."""
+    source = STRATEGY_PATH.read_text()
+    power_flow = source[source.index("// --- Center Column: Power Flow ---") :]
+    assert "if (hasTeslaFlow && hasEntityE('solar_power'))" in power_flow
+    assert "else if (hasFlowCard && hasEntityE('solar_power'))" in power_flow
+
+
 def test_powerwall_local_card_uses_domain_aware_entity_resolution():
     """V1R/DCQ card must resolve binary sensors and switches, not sensor IDs."""
     source = STRATEGY_PATH.read_text()

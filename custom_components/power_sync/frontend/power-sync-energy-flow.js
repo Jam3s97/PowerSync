@@ -1136,6 +1136,26 @@ import {
     return clamp(fallback, 0, 100);
   }
 
+  function toOptionalPct(entityState) {
+    if (!entityState) return null;
+    const candidates = [
+      entityState.state,
+      entityState.attributes?.battery_level,
+      entityState.attributes?.battery,
+      entityState.attributes?.battery_percent,
+      entityState.attributes?.battery_percentage,
+      entityState.attributes?.raw_soc,
+      entityState.attributes?.percentage,
+      entityState.attributes?.level,
+      entityState.attributes?.usable_battery_level
+    ];
+    for (const candidate of candidates) {
+      const parsed = safeNum(candidate, Number.NaN);
+      if (Number.isFinite(parsed)) return clamp(parsed, 0, 100);
+    }
+    return null;
+  }
+
   function joinAsset(base, file) {
     const b = String(base || '').trim().replace(/\/+$/, '');
     const f = String(file || '').trim();
@@ -2175,20 +2195,25 @@ import {
     _renderDynamic() {
       const cfg = this._config;
 
-      const solarPower = toWatt(this._entityState(cfg.entities.solar_power));
-      const gridRaw = toWatt(this._entityState(cfg.entities.grid_power));
-      const gridPower = cfg.grid_invert ? -gridRaw : gridRaw;
+      const solarPower = toOptionalWatt(this._entityState(cfg.entities.solar_power));
+      const gridRaw = toOptionalWatt(this._entityState(cfg.entities.grid_power));
+      const gridPower = Number.isFinite(gridRaw)
+        ? (cfg.grid_invert ? -gridRaw : gridRaw)
+        : null;
       const roofAPower = toWatt(this._entityState(cfg.entities.roof_a_power));
       const roofAVoltage = safeNum(this._entityState(cfg.entities.roof_a_voltage)?.state, 0);
       const roofACurrent = safeNum(this._entityState(cfg.entities.roof_a_current)?.state, 0);
       const roofBPower = toWatt(this._entityState(cfg.entities.roof_b_power));
       const roofBVoltage = safeNum(this._entityState(cfg.entities.roof_b_voltage)?.state, 0);
       const roofBCurrent = safeNum(this._entityState(cfg.entities.roof_b_current)?.state, 0);
-      let batteryPower = toWatt(this._entityState(cfg.entities.battery_power));
-      if (cfg.battery_invert) batteryPower *= -1;
+      let batteryPower = toOptionalWatt(this._entityState(cfg.entities.battery_power));
+      if (Number.isFinite(batteryPower) && cfg.battery_invert) batteryPower *= -1;
       const rawLoadPower = toOptionalWatt(this._entityState(cfg.entities.load_power));
-      const batteryLevel = toPct(this._entityState(cfg.entities.battery_level), 0);
+      const batteryLevel = toOptionalPct(this._entityState(cfg.entities.battery_level));
       const batteryConfigured = !!(cfg.entities.battery_power || cfg.entities.battery_level);
+      const coreTelemetryKnown = Number.isFinite(solarPower)
+        && Number.isFinite(gridPower)
+        && (!batteryConfigured || Number.isFinite(batteryPower));
       const evData = this._collectEvData();
       const evDrawPower = evData.totalDrawPower;
       const evSupplyPower = evData.totalSupplyPower;
@@ -2246,8 +2271,8 @@ import {
       const hasBatteryStatusPosition = !!activeSceneComponentProfile['battery-status'];
       const hasGridStatusPosition = !!activeSceneComponentProfile['grid-status'];
 
-      this._setText('#flow-solar-power', this._formatKW(solarPower));
-      this._setText('#flow-grid-power', this._formatKW(gridPower));
+      this._setText('#flow-solar-power', Number.isFinite(solarPower) ? this._formatKW(solarPower) : '--');
+      this._setText('#flow-grid-power', Number.isFinite(gridPower) ? this._formatKW(gridPower) : '--');
       this._setText('#flow-roof-a-label', String(cfg.roof_a_label || 'ARRAY A'));
       this._setText('#flow-roof-a-power', this._formatKW(roofAPower));
       this._setText('#flow-roof-a-voltage', `${Math.round(roofAVoltage)} V`);
@@ -2257,8 +2282,8 @@ import {
       this._setText('#flow-roof-b-voltage', `${Math.round(roofBVoltage)} V`);
       this._setText('#flow-roof-b-current', `${roofBCurrent.toFixed(1)} A`);
       this._setText('#flow-load-power', loadPowerKnown ? this._formatKW(loadPower) : '--');
-      this._setText('#flow-battery-power', batteryConfigured ? this._formatKW(batteryPower) : '');
-      this._setText('#flow-battery-pct', batteryConfigured ? `${Math.round(batteryLevel)}%` : '');
+      this._setText('#flow-battery-power', batteryConfigured ? (Number.isFinite(batteryPower) ? this._formatKW(batteryPower) : '--') : '');
+      this._setText('#flow-battery-pct', batteryConfigured ? (Number.isFinite(batteryLevel) ? `${Math.round(batteryLevel)}%` : '--') : '');
       this._setText('#flow-ev-label', ev1.labelText || this._t('card.node.ev', 'EV'));
       this._setText('#flow-ev-power', this._formatKW(ev1.power || 0));
       this._setText('#flow-ev-pct', ev1.batteryText || '--%');
@@ -2268,7 +2293,7 @@ import {
 
       const batteryArrowEl = this.shadowRoot.querySelector('#flow-battery-direction');
       if (batteryArrowEl) {
-        if (!batteryConfigured || Math.abs(batteryPower) <= batteryMin) {
+        if (!batteryConfigured || !Number.isFinite(batteryPower) || Math.abs(batteryPower) <= batteryMin) {
           batteryArrowEl.textContent = '';
           batteryArrowEl.style.display = 'none';
         } else if (batteryPower > batteryMin) {
@@ -2287,7 +2312,7 @@ import {
 
       const batteryStatusEl = this.shadowRoot.querySelector('#flow-battery-status');
       if (batteryStatusEl) {
-        if (!hasBatteryStatusPosition || !batteryConfigured) {
+        if (!hasBatteryStatusPosition || !batteryConfigured || !Number.isFinite(batteryPower)) {
           this._setText('#flow-battery-status', '');
           batteryStatusEl.style.display = 'none';
         } else if (batteryPower > batteryMin) {
@@ -2322,14 +2347,22 @@ import {
         }
       }
 
-      this._toggleNode('#node-solar-bg', solarPower > solarMin);
-      this._toggleNode('#node-grid-bg', Math.abs(gridPower) > gridMin);
+      this._toggleNode('#node-solar-bg', Number.isFinite(solarPower) && solarPower > solarMin);
+      this._toggleNode('#node-grid-bg', Number.isFinite(gridPower) && Math.abs(gridPower) > gridMin);
       this._toggleNode('#node-load-bg', loadPowerKnown && loadPower > homeMin);
-      this._toggleNode('#node-battery-bg', batteryConfigured && Math.abs(batteryPower) > batteryMin);
+      this._toggleNode('#node-battery-bg', batteryConfigured && Number.isFinite(batteryPower) && Math.abs(batteryPower) > batteryMin);
       this._toggleNode('#node-ev-bg', Math.abs(ev1.power || 0) > 0 || ev1.switchOn || ev1.present);
       this._toggleNode('#node-ev2-bg', Math.abs(ev2.power || 0) > 0 || ev2.switchOn || ev2.present);
 
       this._beginFlowUpdate();
+
+      // A partial site snapshot cannot establish a physical flow direction.
+      // Keep the card visible with its unavailable labels, but do not animate
+      // arrows using synthetic zero values for any missing core measurement.
+      if (!coreTelemetryKnown) {
+        this._commitFlowUpdate();
+        return;
+      }
 
       const solarPos = Math.max(0, solarPower);
       const loadPos = loadPowerKnown ? Math.max(0, loadPower) : 0;

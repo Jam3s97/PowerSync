@@ -18748,9 +18748,21 @@ def _get_ev_display_coordinator(hass, entry):
         normalized_site = status_view._site_snapshot()
         site.update(normalized_site)
         normalized_live_status = {
-            "solar_power": site["solar_power_kw"] * 1000,
-            "grid_power": site["grid_power_kw"] * 1000,
-            "battery_power": site["battery_power_kw"] * 1000,
+            "solar_power": (
+                None
+                if site["solar_power_kw"] is None
+                else site["solar_power_kw"] * 1000
+            ),
+            "grid_power": (
+                None
+                if site["grid_power_kw"] is None
+                else site["grid_power_kw"] * 1000
+            ),
+            "battery_power": (
+                None
+                if site["battery_power_kw"] is None
+                else site["battery_power_kw"] * 1000
+            ),
             "load_power": (
                 None
                 if site["load_power_kw"] is None
@@ -18843,12 +18855,19 @@ class EVLoadpointStatusView(HomeAssistantView):
         entry_id = self._config_entry.entry_id
         entry_data = self._hass.data.get(DOMAIN, {}).get(entry_id, {})
 
-        solar_power_kw = 0.0
-        grid_power_kw = 0.0
-        battery_power_kw = 0.0
+        solar_power_kw = None
+        grid_power_kw = None
+        battery_power_kw = None
         load_power_kw = None
-        battery_soc = 0.0
+        battery_soc = None
         is_curtailed = False
+
+        def finite_value(value):
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if math.isfinite(parsed) else None
 
         for key in (
             "tesla_coordinator",
@@ -18857,23 +18876,16 @@ class EVLoadpointStatusView(HomeAssistantView):
             "foxess_coordinator",
         ):
             coordinator = entry_data.get(key)
-            if coordinator and coordinator.data:
-                solar_power_kw = coordinator.data.get("solar_power", 0) or 0
-                grid_power_kw = coordinator.data.get("grid_power", 0) or 0
-                battery_power_kw = coordinator.data.get("battery_power", 0) or 0
-                raw_load_power_kw = coordinator.data.get("load_power")
-                try:
-                    parsed_load_power_kw = float(raw_load_power_kw)
-                except (TypeError, ValueError):
-                    parsed_load_power_kw = None
-                load_power_kw = (
-                    parsed_load_power_kw
-                    if parsed_load_power_kw is not None
-                    and math.isfinite(parsed_load_power_kw)
-                    else None
-                )
-                battery_soc = coordinator.data.get("battery_level", 0) or 0
-                is_curtailed = coordinator.data.get("is_curtailed", False) is True
+            if coordinator and isinstance(coordinator.data, dict):
+                data = coordinator.data
+                if data.get("telemetry_ready") is False:
+                    break
+                solar_power_kw = finite_value(data.get("solar_power"))
+                grid_power_kw = finite_value(data.get("grid_power"))
+                battery_power_kw = finite_value(data.get("battery_power"))
+                load_power_kw = finite_value(data.get("load_power"))
+                battery_soc = finite_value(data.get("battery_level"))
+                is_curtailed = data.get("is_curtailed", False) is True
                 break
 
         return {
@@ -18952,9 +18964,21 @@ class EVLoadpointStatusView(HomeAssistantView):
 
             site = self._site_snapshot()
             live_status = {
-                "solar_power": site["solar_power_kw"] * 1000,
-                "grid_power": site["grid_power_kw"] * 1000,
-                "battery_power": site["battery_power_kw"] * 1000,
+                "solar_power": (
+                    None
+                    if site["solar_power_kw"] is None
+                    else site["solar_power_kw"] * 1000
+                ),
+                "grid_power": (
+                    None
+                    if site["grid_power_kw"] is None
+                    else site["grid_power_kw"] * 1000
+                ),
+                "battery_power": (
+                    None
+                    if site["battery_power_kw"] is None
+                    else site["battery_power_kw"] * 1000
+                ),
                 "load_power": (
                     None
                     if site["load_power_kw"] is None
