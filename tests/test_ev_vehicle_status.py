@@ -591,6 +591,33 @@ def test_ev_vehicle_status_keeps_real_charging_power_when_charging():
     assert vehicles[0]["ev_soc"] == 73
 
 
+def test_fleet_stale_active_power_is_unavailable_across_status_surfaces():
+    """Ticket #49: stale Fleet watts cannot be rendered as a live EV draw."""
+    power_sync = _power_sync_module()
+    loadpoint_status = importlib.import_module(
+        "power_sync.automations.loadpoint_status"
+    )
+    now = datetime.now(timezone.utc)
+    hass = _tesla_hass([
+        _State(
+            "sensor.primary_ev_charger_power", "7.0",
+            {"unit_of_measurement": "kW"}, last_updated=now - timedelta(minutes=5),
+        ),
+        _State("sensor.primary_ev_charging_state", "charging", last_updated=now),
+        _State("binary_sensor.primary_ev_charge_cable", "on", last_updated=now),
+        _State("device_tracker.primary_ev_location", "home", last_updated=now),
+    ])
+
+    vehicle = power_sync._get_ev_vehicles_status(hass, _Entry())[0]
+    loadpoint = loadpoint_status.build_loadpoint_status({}, [vehicle])[0]
+
+    assert vehicle["ev_power_kw"] == 7.0
+    assert vehicle["is_charging"] is True
+    assert vehicle["power_available"] is False
+    assert loadpoint["current_power_kw"] is None
+    assert loadpoint["confidence"] == "unknown"
+
+
 def test_both_provider_ble_bridge_coalesces_without_hiding_fleet_only_vehicle():
     power_sync = _power_sync_module()
     primary_vin = "5YJTEST0000000001"

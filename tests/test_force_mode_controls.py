@@ -3065,7 +3065,7 @@ def test_optimizer_discharge_early_blocks_raise_service_error():
         1,
     )[0]
     network_block = function_source.split(
-        "if command_power_w <= 0:",
+        'use_device_max = source != "optimizer" and command_power_w <= 0',
         1,
     )[1].split(
         "async def _guarded_force_discharge_write",
@@ -3075,6 +3075,23 @@ def test_optimizer_discharge_early_blocks_raise_service_error():
     assert '"Optimizer force discharge blocked by monitoring mode"' in monitoring_block
     assert 'if source == "optimizer":' in network_block
     assert '"Optimizer force discharge blocked by network envelope"' in network_block
+
+
+def test_manual_zero_force_power_reaches_device_max_only_when_envelope_is_off():
+    """Ticket #47: do not mistake the documented manual max sentinel for denial."""
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function_source = ast.get_source_segment(
+        source, _find_function(tree, "handle_force_discharge")
+    )
+
+    assert function_source is not None
+    network_block = function_source.split(
+        "network_guard = _fd_entry_data.get(\"network_export_guard\")", 1
+    )[1].split("async def _guarded_force_discharge_write", 1)[0]
+    assert 'use_device_max = source != "optimizer" and command_power_w <= 0' in network_block
+    assert 'if snapshot.mode != "off":' in network_block
+    assert "if not use_device_max and command_power_w <= 0:" in network_block
 
 
 def test_tesla_force_discharge_disables_grid_charging_before_tariff_upload():

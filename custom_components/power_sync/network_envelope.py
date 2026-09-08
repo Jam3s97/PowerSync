@@ -682,7 +682,11 @@ class ExportGuard:
             or not second.active_export_permitted
         ):
             return False
-        if clamped <= 0 and requested_w > 0:
+        # A zero request is the manual-service sentinel for "use the device
+        # maximum" while the envelope is off. It must never reach an actuator
+        # after the envelope becomes active, monitoring, or faulted: several
+        # adapters intentionally interpret zero as an unbounded device maximum.
+        if clamped <= 0 and (requested_w > 0 or second.mode != "off"):
             return False
         return bool(await writer(clamped))
 

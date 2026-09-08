@@ -309,6 +309,44 @@ def test_zero_power_mode_transition_is_denied_after_snapshot_becomes_invalid() -
     assert writes == []
 
 
+def test_unbounded_manual_sentinel_is_allowed_only_while_envelope_is_off() -> None:
+    """A zero/max service request must not bypass an envelope that turns on."""
+    off = network.normalize_envelope(
+        mode="off",
+        scope="aggregate_pcc",
+        current_limit_w=None,
+        fallback_limit_w=None,
+        static_limit_w=None,
+        source_status=None,
+        source_updated_at=None,
+        received_at=None,
+        expires_at=None,
+        now=NOW,
+    )
+    manager = _FakeManager(off, pcc_export_w=0)
+    guard = network.ExportGuard(manager)
+    writes: list[float] = []
+
+    async def writer(value: float) -> bool:
+        writes.append(value)
+        return True
+
+    assert asyncio.run(guard.async_guard_write(0, writer)) is True
+    assert writes == [0]
+
+    writes.clear()
+    original_clamp = guard.clamp_requested_export_w
+
+    async def transition_after_clamp(*args, **kwargs):
+        result = await original_clamp(*args, **kwargs)
+        manager.snapshot = _active(snapshot_version=32)
+        return result
+
+    guard.clamp_requested_export_w = transition_after_clamp
+    assert asyncio.run(guard.async_guard_write(0, writer)) is False
+    assert writes == []
+
+
 def test_no_envelope_off_preserves_legacy_scalar_behavior() -> None:
     off = network.normalize_envelope(
         mode="off",

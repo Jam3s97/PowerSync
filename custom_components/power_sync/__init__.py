@@ -2081,6 +2081,14 @@ def _get_ev_vehicles_status(hass, entry) -> list:
             "_charging_observed_at": charging_observed_at,
             "_connected_observed_at": vehicle_connected_observed_at,
         }
+        if (
+            is_charging
+            and measured_power_seen
+            and measured_power_observed_at is not None
+        ):
+            vehicle_status["power_available"] = is_current_ev_power_observation(
+                measured_power_observed_at
+            )
         if site_presence is not None:
             vehicle_status["site_presence"] = site_presence
         if site_presence_observed_at is not None:
@@ -31672,15 +31680,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Every service-originated export path (manual, automation, optimizer
         # hardware extension) passes this single entry-scoped gate before the
-        # brand router below can reach an actuator. Numeric zero is a real
-        # deny limit; it must never fall through to a brand's "0 means max"
-        # convention.
+        # brand router below can reach an actuator. A manual zero/omitted
+        # power_w is the documented "use device maximum" sentinel, but an
+        # optimizer zero remains a deny/no-export request.
         network_guard = _fd_entry_data.get("network_export_guard")
+        use_device_max = source != "optimizer" and command_power_w <= 0
         if network_guard is not None:
-            command_power_w = await network_guard.clamp_requested_export_w(
-                command_power_w
-            )
-            if command_power_w <= 0:
+            if use_device_max:
+                snapshot = network_guard.manager.snapshot
+                if snapshot.mode != "off":
+                    _LOGGER.warning(
+                        "Force discharge blocked by network envelope (%s)",
+                        snapshot.fault or snapshot.reason or snapshot.mode,
+                    )
+                    return
+            else:
+                command_power_w = await network_guard.clamp_requested_export_w(
+                    command_power_w
+                )
+            if not use_device_max and command_power_w <= 0:
                 snapshot = network_guard.manager.snapshot
                 _LOGGER.warning(
                     "Force discharge blocked by network envelope (%s)",
