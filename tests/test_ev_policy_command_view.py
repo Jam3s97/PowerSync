@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ast
+import asyncio
+import copy
 from pathlib import Path
 
 
@@ -49,6 +52,83 @@ def test_start_policy_charging_uses_mapping_and_owner_guard():
     assert "self._active_non_manual_owner_message(vehicle_vin)" in method_source
     assert "\"start_ev_charging_dynamic\"" not in method_source
     assert "\"Manual EV policy start from HA dashboard\"" in method_source
+
+
+def _command_view_method(name: str, namespace: dict):
+    """Compile one command-view method with its dependencies supplied by a test."""
+    tree = ast.parse(INIT_PATH.read_text())
+    command_view = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "EVVehicleCommandView"
+    )
+    method = copy.deepcopy(next(
+        node for node in command_view.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == name
+    ))
+    method.decorator_list = []
+    method.returns = None
+    for arg in [*method.args.args, *method.args.kwonlyargs]:
+        arg.annotation = None
+    method.body = [
+        node for node in method.body
+        if not isinstance(node, ast.ImportFrom)
+    ]
+    compiled = ast.Module(body=[method], type_ignores=[])
+    ast.fix_missing_locations(compiled)
+    exec(compile(compiled, str(INIT_PATH), "exec"), namespace)
+    return namespace[name]
+
+
+def test_manual_generic_service_failure_reaches_command_response_safely():
+    async def failed_action(_hass, _entry, _action, params):
+        params["_manual_command_failure"].update({
+            "stage": "switch_service",
+            "entity_id": "switch.garage_ev",
+        })
+        return False
+
+    execute = _command_view_method(
+        "_execute_manual_ev_action_for_entry",
+        {"_execute_single_action": failed_action},
+    )
+
+    class _View:
+        _hass = object()
+
+        @staticmethod
+        def _manual_action_params(_vehicle):
+            return {"charger_type": "generic"}
+
+    success, message = asyncio.run(
+        execute(_View(), object(), "start_ev_charging", None, {}, "manual test")
+    )
+
+    assert success is False
+    assert message == "Generic Charger switch service for switch.garage_ev failed"
+
+
+def test_manual_start_returns_the_safe_generic_failure_to_the_ui():
+    start = _command_view_method("_start_charging", {})
+
+    class _View:
+        @staticmethod
+        def _manual_action_params(_vehicle):
+            return {"charger_type": "generic"}
+
+        @staticmethod
+        def _active_non_manual_owner_message(_vehicle):
+            return None
+
+        async def _loadpoint_ready_for_manual_start(self, _vehicle, _params):
+            return True, ""
+
+        async def _execute_manual_ev_action(self, *_args):
+            return False, "Generic Charger switch service for switch.garage_ev failed"
+
+    success, message = asyncio.run(start(_View(), None, None, "grid_allowed"))
+
+    assert success is False
+    assert message == "Generic Charger switch service for switch.garage_ev failed"
 
 
 def test_manual_owner_guard_uses_manual_takeover_policy():

@@ -4372,6 +4372,40 @@ def test_generic_start_allows_available_status_when_connector_has_car():
     ]
 
 
+def test_generic_manual_switch_failure_keeps_safe_service_boundary():
+    hass = _Hass([_State("switch.garage_ev", "off")])
+    manual_failure = {}
+
+    async def reject_switch(domain, service, data, blocking=True):
+        hass.services.calls.append((domain, service, data))
+        raise RuntimeError("Garo provider rejected the command")
+
+    hass.services.async_call = reject_switch
+
+    result = asyncio.run(
+        actions._set_vehicle_amps(
+            hass,
+            _Entry(),
+            "generic_ev",
+            16,
+            {
+                "charger_type": "generic",
+                "charger_switch_entity": "switch.garage_ev",
+                "_manual_command_failure": manual_failure,
+            },
+        )
+    )
+
+    assert result is False
+    assert manual_failure == {
+        "stage": "switch_service",
+        "entity_id": "switch.garage_ev",
+    }
+    assert hass.services.calls == [
+        ("switch", "turn_on", {"entity_id": "switch.garage_ev"})
+    ]
+
+
 def test_generic_start_runs_pre_charge_wake_before_switch_on():
     hass = _Hass([
         _State("switch.garage_ev", "off"),

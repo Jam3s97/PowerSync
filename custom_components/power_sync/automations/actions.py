@@ -348,6 +348,7 @@ async def _set_generic_charger_amps_entity(
     hass: HomeAssistant,
     entity_id: str,
     amps: int,
+    manual_failure: dict | None = None,
 ) -> bool:
     """Set a generic charger's current through its configured HA entity domain."""
     entity_id = str(entity_id or "").strip()
@@ -357,6 +358,9 @@ async def _set_generic_charger_amps_entity(
             "Generic charger amps entity %s must be number.* or input_number.*",
             entity_id or "<empty>",
         )
+        _record_manual_generic_failure(
+            manual_failure, "amps_validation", entity_id
+        )
         return False
 
     # A generic number entity is the authoritative last-mile contract. Keep
@@ -364,6 +368,9 @@ async def _set_generic_charger_amps_entity(
     # before Home Assistant validates it.
     applied_amps = _normalize_generic_charger_amps(hass, entity_id, amps)
     if applied_amps is None:
+        _record_manual_generic_failure(
+            manual_failure, "amps_validation", entity_id
+        )
         return False
 
     try:
@@ -376,17 +383,40 @@ async def _set_generic_charger_amps_entity(
         return True
     except Exception as err:
         _LOGGER.error("Generic charger set amps failed via %s: %s", entity_id, err)
+        _record_manual_generic_failure(manual_failure, "amps_service", entity_id)
         return False
+
+
+def _record_manual_generic_failure(
+    manual_failure: dict | None,
+    stage: str,
+    entity_id: str | None = None,
+) -> None:
+    """Preserve a safe Generic Charger failure boundary for manual commands.
+
+    Automation callers retain their boolean contract.  A dashboard-initiated
+    command supplies the transient dictionary, allowing its HTTP response to
+    identify the failed service boundary without exposing a provider exception.
+    """
+    if not isinstance(manual_failure, dict):
+        return
+    manual_failure.setdefault("stage", stage)
+    if entity_id:
+        manual_failure.setdefault("entity_id", str(entity_id).strip())
 
 
 async def _start_generic_charger_switch(
     hass: HomeAssistant,
     entity_id: str,
+    manual_failure: dict | None = None,
 ) -> bool:
     """Start a generic charger switch without duplicating active transactions."""
     entity_id = str(entity_id or "").strip()
     if not entity_id.startswith("switch."):
         _LOGGER.error("Generic charger start: invalid switch entity %s", entity_id)
+        _record_manual_generic_failure(
+            manual_failure, "switch_validation", entity_id
+        )
         return False
 
     switch_state = hass.states.get(entity_id)
@@ -428,6 +458,7 @@ async def _start_generic_charger_switch(
         return True
     except Exception as err:
         _LOGGER.error("Generic charger start failed via %s: %s", entity_id, err)
+        _record_manual_generic_failure(manual_failure, "switch_service", entity_id)
         return False
 
 
@@ -7008,6 +7039,7 @@ async def _set_vehicle_amps_unchecked(
         switch_entity = params.get("charger_switch_entity")
         amps_entity = params.get("charger_amps_entity")
         applied_amps = amps
+        manual_failure = params.get("_manual_command_failure")
 
         try:
             if amps == 0:
@@ -7019,7 +7051,7 @@ async def _set_vehicle_amps_unchecked(
                         blocking=True
                     )
                 elif amps_entity and not await _set_generic_charger_amps_entity(
-                    hass, amps_entity, 0
+                    hass, amps_entity, 0, manual_failure
                 ):
                     return False
             else:
@@ -7027,8 +7059,14 @@ async def _set_vehicle_amps_unchecked(
                 ready, block_reason = _generic_charger_ready_for_start(hass, params)
                 if not ready:
                     _LOGGER.warning("Generic charger set amps blocked: %s", block_reason)
+                    _record_manual_generic_failure(
+                        manual_failure, "readiness", params.get("charger_status_entity")
+                    )
                     return False
                 if not await _run_pre_charge_wake_sequence(hass, params, "generic"):
+                    _record_manual_generic_failure(
+                        manual_failure, "pre_charge_wake", params.get("pre_charge_wake_entity")
+                    )
                     return False
                 if amps_entity:
                     normalized_amps = _normalize_generic_charger_amps(
@@ -7043,10 +7081,11 @@ async def _set_vehicle_amps_unchecked(
                         hass,
                         amps_entity,
                         applied_amps,
+                        manual_failure,
                     ):
                         return False
                 if switch_entity and not await _start_generic_charger_switch(
-                    hass, switch_entity
+                    hass, switch_entity, manual_failure
                 ):
                     return False
             _LOGGER.info(

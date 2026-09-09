@@ -15856,11 +15856,11 @@ class EVVehicleCommandView(HomeAssistantView):
         vehicle_vin: str | None,
         params_extra: dict | None,
         reason: str,
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """Execute an EV command through the shared automation action layer."""
         entry = self._get_powersync_entry()
         if not entry:
-            return False
+            return False, "PowerSync integration entry is unavailable"
 
         return await self._execute_manual_ev_action_for_entry(
             entry,
@@ -15877,7 +15877,7 @@ class EVVehicleCommandView(HomeAssistantView):
         vehicle_vin: str | None,
         params_extra: dict | None,
         reason: str,
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """Execute a manual EV action for an explicit integration entry."""
 
         from .automations.actions import _execute_single_action
@@ -15885,7 +15885,23 @@ class EVVehicleCommandView(HomeAssistantView):
         params = self._manual_action_params(vehicle_vin)
         params.update(params_extra or {})
         params["reason"] = reason
-        return await _execute_single_action(self._hass, entry, action_type, params)
+        manual_failure: dict[str, str] = {}
+        params["_manual_command_failure"] = manual_failure
+        try:
+            success = await _execute_single_action(
+                self._hass, entry, action_type, params
+            )
+        finally:
+            params.pop("_manual_command_failure", None)
+
+        stage = manual_failure.get("stage")
+        if not stage:
+            return success, ""
+        entity_id = manual_failure.get("entity_id")
+        detail = stage.replace("_", " ")
+        if entity_id:
+            detail = f"{detail} for {entity_id}"
+        return success, f"Generic Charger {detail} failed"
 
     def _manual_loadpoint_id(self, vehicle_vin: str | None) -> str:
         """Return the runtime loadpoint id used by manual EV actions."""
@@ -16234,7 +16250,7 @@ class EVVehicleCommandView(HomeAssistantView):
         if not ready:
             return False, message
 
-        success = await self._execute_manual_ev_action(
+        success, failure_message = await self._execute_manual_ev_action(
             action.action_type,
             vehicle_vin,
             action.params,
@@ -16254,7 +16270,7 @@ class EVVehicleCommandView(HomeAssistantView):
                 )
             return True, f"{action.label} for {duration} minutes"
 
-        return False, f"Failed to start {policy} charging"
+        return False, failure_message or f"Failed to start {policy} charging"
 
     async def _start_charging(
         self,
@@ -16273,7 +16289,7 @@ class EVVehicleCommandView(HomeAssistantView):
         if not ready:
             return False, message
 
-        success = await self._execute_manual_ev_action(
+        success, failure_message = await self._execute_manual_ev_action(
             "start_ev_charging",
             vehicle_vin,
             {
@@ -16298,12 +16314,12 @@ class EVVehicleCommandView(HomeAssistantView):
                 return True, f"Charging started via Sigenergy charger{duration_text}"
             return True, f"Charging started{duration_text}"
 
-        return False, "Failed to start charging"
+        return False, failure_message or "Failed to start charging"
 
     async def _stop_charging(self, vehicle_vin: str | None = None) -> tuple[bool, str]:
         """Stop charging. Returns (success, message)."""
         charger_type = self._manual_action_params(vehicle_vin).get("charger_type", "tesla")
-        success = await self._execute_manual_ev_action(
+        success, _failure_message = await self._execute_manual_ev_action(
             "stop_ev_charging",
             vehicle_vin,
             None,
@@ -16324,7 +16340,7 @@ class EVVehicleCommandView(HomeAssistantView):
         percent = max(50, min(100, int(percent)))
 
         charger_type = self._manual_action_params(vehicle_vin).get("charger_type", "tesla")
-        success = await self._execute_manual_ev_action(
+        success, _failure_message = await self._execute_manual_ev_action(
             "set_ev_charge_limit",
             vehicle_vin,
             {"percent": percent},
@@ -16352,7 +16368,7 @@ class EVVehicleCommandView(HomeAssistantView):
             _LOGGER.warning(msg)
             return False, msg
 
-        success = await self._execute_manual_ev_action(
+        success, _failure_message = await self._execute_manual_ev_action(
             "set_ev_charging_amps",
             vehicle_vin,
             {"amps": amps},
