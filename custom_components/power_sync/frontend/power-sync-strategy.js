@@ -3272,10 +3272,18 @@ class PowerSyncOptimizationPlan extends HTMLElement {
 
   _stepPath(points, xScale, yScale, key) {
     let path = '';
+    let drawing = false;
     for (let i = 0; i < points.length; i++) {
+      if (!Number.isFinite(points[i][key])) {
+        drawing = false;
+        continue;
+      }
       const x = xScale(i);
-      const y = yScale(Number.isFinite(points[i][key]) ? points[i][key] : 0);
-      if (i === 0) path += `M${x},${y}`;
+      const y = yScale(points[i][key]);
+      if (!drawing) {
+        path += `M${x},${y}`;
+        drawing = true;
+      }
       else path += `H${x}V${y}`;
     }
     return path;

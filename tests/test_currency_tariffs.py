@@ -284,3 +284,45 @@ console.log(JSON.stringify({
         "unknown": ["--", "--", "--"],
         "zero": ["0.00 kW", "0 A", "0%"],
     }
+
+
+def test_optimizer_plan_price_path_keeps_unavailable_slots_distinct_from_zero():
+    """Ticket #45: missing source prices must not render as a zero-price tail."""
+    if shutil.which("node") is None:
+        return
+
+    script = r'''
+const fs = require('fs');
+const vm = require('vm');
+const registry = {};
+class HTMLElement { attachShadow() { return { innerHTML: '', querySelector() { return null; } }; } }
+const context = {
+  HTMLElement,
+  customElements: { get(name) { return registry[name]; }, define(name, klass) { registry[name] = klass; } },
+  window: {},
+  ResizeObserver: class {},
+  requestAnimationFrame() {},
+};
+context.globalThis = context;
+vm.runInNewContext(fs.readFileSync('custom_components/power_sync/frontend/power-sync-strategy.js', 'utf8'), context);
+const plan = new registry['power-sync-optimization-plan']();
+const scale = value => value;
+console.log(JSON.stringify({
+  unavailable: plan._stepPath(
+    [{ price: 10 }, { price: Number.NaN }, { price: 0 }, { price: 5 }],
+    scale, scale, 'price',
+  ),
+  zero: plan._stepPath(
+    [{ price: 10 }, { price: 0 }, { price: 5 }],
+    scale, scale, 'price',
+  ),
+}));
+'''
+    result = subprocess.run(
+        ["node"], input=script, text=True, capture_output=True, cwd=ROOT, check=True
+    )
+
+    assert json.loads(result.stdout) == {
+        "unavailable": "M0,10M2,0H3V5",
+        "zero": "M0,10H1V0H2V5",
+    }
