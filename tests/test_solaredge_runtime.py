@@ -6,6 +6,7 @@ import ast
 import asyncio
 import copy
 import logging
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -81,6 +82,10 @@ def _load_node(node, namespace):
         namespace,
     )
     return namespace[node.name]
+
+
+def _load_solaredge_force_helper(namespace):
+    return _load_node(_setup_node("_commit_solaredge_force_transition"), namespace)
 
 
 @pytest.mark.parametrize("direction", ["charge", "discharge"])
@@ -181,12 +186,21 @@ def test_manual_solaredge_rejected_write_does_not_arm_timer(direction):
         "force_charge_state": {"active": False},
         "force_discharge_state": {"active": False},
         "_guarded_force_discharge_write": guarded,
+        "_restore_solaredge_curtailment_for_dispatch": AsyncMock(return_value=True),
         "_LOGGER": logging.getLogger(__name__),
         "HomeAssistantError": RuntimeError,
         "_notify_api_error": notify,
         "async_track_point_in_utc_time": timer,
         "async_dispatcher_send": dispatch,
+        "_cancel_all_force_timers": Mock(),
+        "_command_generation": [0],
+        "self_consumption_state": {"active": False},
+        "_clear_self_consumption_state": Mock(),
+        "persist_force_mode_state": AsyncMock(),
+        "dt_util": SimpleNamespace(utcnow=lambda: None),
+        "timedelta": timedelta,
     }
+    _load_solaredge_force_helper(namespace)
     call = _load_node(handler, namespace)
     with pytest.raises(RuntimeError, match="SolarEdge"):
         asyncio.run(call(None))
@@ -547,7 +561,11 @@ def test_solaredge_confirmed_manual_service_returns_response_dict(operation, sou
         "async_track_point_in_utc_time": Mock(),
         "persist_force_mode_state": AsyncMock(),
         "suppress_notification": True,
+        "_cancel_all_force_timers": Mock(),
+        "_command_generation": [0],
     }
+    if operation.startswith("force_"):
+        _load_solaredge_force_helper(namespace)
     call = _load_node(handler, namespace)
     response = asyncio.run(call(SimpleNamespace(data={})))
     assert isinstance(response, dict)

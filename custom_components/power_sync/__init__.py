@@ -31678,6 +31678,122 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ),
         )
 
+    async def _commit_solaredge_force_transition(
+        direction: str,
+        duration: int,
+        power_w: float,
+        source: str,
+        solaredge_coord: Any,
+        write: Callable[[], Any],
+    ) -> dict[str, Any]:
+        """Publish a SolarEdge force mode only after its write is confirmed.
+
+        A current force timer remains the only cleanup path while the next
+        SolarEdge transition is awaiting confirmation.  In particular, a
+        rejected or uncertain write must not strand the previous local state.
+        """
+        try:
+            confirmed = await write()
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            _LOGGER.error(
+                "SolarEdge force %s failed before local lifecycle commit: %s",
+                direction,
+                err,
+            )
+            raise HomeAssistantError(
+                f"SolarEdge force {direction} failed; check control health"
+            ) from err
+        if not confirmed:
+            raise HomeAssistantError(
+                f"SolarEdge force {direction} was not confirmed; "
+                "check control health before retrying"
+            )
+
+        _cancel_all_force_timers(f"confirmed SolarEdge force_{direction} command")
+        _command_generation[0] += 1
+        restore_generation = _command_generation[0]
+        if self_consumption_state.get("active"):
+            _clear_self_consumption_state()
+
+        state = (
+            force_charge_state if direction == "charge" else force_discharge_state
+        )
+        previous_state = (
+            force_discharge_state if direction == "charge" else force_charge_state
+        )
+        previous_direction = "discharge" if direction == "charge" else "charge"
+        was_previous_active = bool(previous_state.get("active"))
+        previous_state["active"] = False
+        previous_state["expires_at"] = None
+        state["active"] = True
+        state["source"] = source
+        state["duration"] = duration
+        state["power_w"] = power_w
+        state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
+        _LOGGER.info(
+            "SolarEdge FORCE %s ACTIVE for %d minutes (power_w=%s)",
+            direction.upper(),
+            duration,
+            power_w,
+        )
+
+        if was_previous_active:
+            async_dispatcher_send(
+                hass,
+                f"{DOMAIN}_force_{previous_direction}_state",
+                {"active": False, "expires_at": None, "duration": 0},
+            )
+        async_dispatcher_send(
+            hass,
+            f"{DOMAIN}_force_{direction}_state",
+            {
+                "active": True,
+                "expires_at": state["expires_at"].isoformat(),
+                "duration": duration,
+            },
+        )
+
+        controller_generation = solaredge_coord.intent_generation
+
+        async def auto_restore_solaredge(_now):
+            if _command_generation[0] != restore_generation:
+                _LOGGER.debug(
+                    "SolarEdge force %s timer superseded — skipping restore", direction
+                )
+                return
+            if state["active"]:
+                _LOGGER.info("SolarEdge force %s expired, auto-restoring", direction)
+                await hass.services.async_call(
+                    DOMAIN,
+                    SERVICE_RESTORE_NORMAL,
+                    {
+                        "source": "force_timer",
+                        "_allow_monitoring_restore": True,
+                        "_solaredge_generation": controller_generation,
+                    },
+                    blocking=True,
+                )
+
+        state["cancel_expiry_timer"] = async_track_point_in_utc_time(
+            hass, auto_restore_solaredge, state["expires_at"]
+        )
+        try:
+            await persist_force_mode_state()
+        except Exception:
+            _LOGGER.exception(
+                "SolarEdge force %s is active but its restart state could not be persisted",
+                direction,
+            )
+            return {
+                "success": True,
+                "warning": (
+                    f"Force {direction} is active, but its restart state could not be saved."
+                ),
+            }
+        return {"success": True}
+
     async def handle_force_discharge(call: ServiceCall) -> dict[str, Any] | None:
         """Force discharge mode - switches to autonomous with high export tariff."""
 
@@ -32079,6 +32195,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             if not release_result:
                 raise HomeAssistantError("SolarEdge curtailment release was not confirmed")
+            # Do not cancel a confirmed force timer or change mutual-exclusion
+            # state until the replacement command itself has confirmed.  The
+            # controller serializes the hardware transition; this local commit
+            # is deliberately after that result.
+            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            solaredge_coord = entry_data.get("solaredge_coordinator")
+            if not solaredge_coord:
+                raise HomeAssistantError("SolarEdge control entities are unavailable")
+            return await _commit_solaredge_force_transition(
+                "discharge",
+                duration,
+                command_power_w,
+                source,
+                solaredge_coord,
+                lambda: _guarded_force_discharge_write(
+                    lambda guarded_w: solaredge_coord.force_discharge(
+                        duration,
+                        power_w=guarded_w,
+                        automatic=source == "optimizer",
+                    )
+                ),
+            )
 
         # Cancel any pending expiry timers and advance the generation counter
         # synchronously — before any await — so that a queued restore callback
@@ -32820,81 +32958,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error in Sungrow force discharge: {e}", exc_info=True)
                 hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "Sungrow Modbus communication error"))
                 return
-
-        if is_solaredge_local:
-            try:
-                # Re-read after the awaited release in case an unload/reload
-                # replaced the entry while that safety check was in flight.
-                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-                solaredge_coord = entry_data.get("solaredge_coordinator")
-                if not solaredge_coord:
-                    raise HomeAssistantError("SolarEdge control entities are unavailable")
-                power_w = command_power_w
-                discharge_result = await _guarded_force_discharge_write(
-                    lambda guarded_w: solaredge_coord.force_discharge(
-                        duration, power_w=guarded_w, automatic=source == "optimizer"
-                    )
-                )
-
-                if discharge_result:
-                    force_discharge_state["active"] = True
-                    force_discharge_state["source"] = source
-                    force_discharge_state["duration"] = duration
-                    force_discharge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
-                    _LOGGER.info("SolarEdge FORCE DISCHARGE ACTIVE for %d minutes (power_w=%s)", duration, power_w)
-
-                    async_dispatcher_send(hass, f"{DOMAIN}_force_discharge_state", {
-                        "active": True,
-                        "expires_at": force_discharge_state["expires_at"].isoformat(),
-                        "duration": duration,
-                    })
-
-                    if force_discharge_state.get("cancel_expiry_timer"):
-                        force_discharge_state["cancel_expiry_timer"]()
-
-                    controller_generation = solaredge_coord.intent_generation
-
-                    async def auto_restore_discharge_solaredge(_now):
-                        if _command_generation[0] != _restore_gen:
-                            _LOGGER.debug("SolarEdge force discharge timer superseded — skipping restore")
-                            return
-                        if force_discharge_state["active"]:
-                            _LOGGER.info("SolarEdge force discharge expired, auto-restoring")
-                            await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {"source": "force_timer", "_allow_monitoring_restore": True, "_solaredge_generation": controller_generation}, blocking=True)
-
-                    force_discharge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
-                        hass,
-                        auto_restore_discharge_solaredge,
-                        force_discharge_state["expires_at"],
-                    )
-                    try:
-                        await persist_force_mode_state()
-                    except Exception:
-                        # The command was already confirmed and its expiry
-                        # timer is armed. Do not make the in-memory state
-                        # false while leaving the active event and timer live
-                        # merely because restart persistence failed.
-                        _LOGGER.exception(
-                            "SolarEdge force discharge is active but its "
-                            "restart state could not be persisted"
-                        )
-                        return {
-                            "success": True,
-                            "warning": "Force discharge is active, but its restart state could not be saved.",
-                        }
-                    return {"success": True}
-                else:
-                    force_discharge_state["active"] = False
-                    _LOGGER.error("SolarEdge force discharge failed")
-                    hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "SolarEdge command was not confirmed; check control health before retrying"))
-                    raise HomeAssistantError("SolarEdge force discharge was not confirmed; check control health")
-            except HomeAssistantError:
-                raise
-            except Exception as e:
-                force_discharge_state["active"] = False
-                _LOGGER.error(f"Error in SolarEdge force discharge: {e}", exc_info=True)
-                hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "SolarEdge entity write error"))
-                raise HomeAssistantError("SolarEdge force discharge failed; check control health") from e
 
         is_anker_solix_local = entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_ANKER_SOLIX
         if is_anker_solix_local:
@@ -33895,6 +33958,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             if not release_result:
                 raise HomeAssistantError("SolarEdge curtailment release was not confirmed")
+            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            solaredge_coord = entry_data.get("solaredge_coordinator")
+            if not solaredge_coord:
+                raise HomeAssistantError("SolarEdge control entities are unavailable")
+            return await _commit_solaredge_force_transition(
+                "charge",
+                duration,
+                command_power_w,
+                source,
+                solaredge_coord,
+                lambda: solaredge_coord.force_charge(
+                    duration,
+                    power_w=command_power_w,
+                    automatic=source == "optimizer",
+                ),
+            )
 
         # Cancel any pending expiry timers and advance the generation counter
         # synchronously — before any await — so that a queued restore callback
@@ -34654,77 +34733,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error in Sungrow force charge: {e}", exc_info=True)
                 hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Sungrow Modbus communication error"))
                 return
-
-        if is_solaredge_local:
-            try:
-                # Re-read after the awaited release in case an unload/reload
-                # replaced the entry while that safety check was in flight.
-                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-                solaredge_coord = entry_data.get("solaredge_coordinator")
-                if not solaredge_coord:
-                    raise HomeAssistantError("SolarEdge control entities are unavailable")
-                power_w = command_power_w
-                charge_result = await solaredge_coord.force_charge(duration, power_w=power_w, automatic=source == "optimizer")
-
-                if charge_result:
-                    force_charge_state["active"] = True
-                    force_charge_state["source"] = source
-                    force_charge_state["duration"] = duration
-                    force_charge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
-                    _LOGGER.info("SolarEdge FORCE CHARGE ACTIVE for %d minutes (power_w=%s)", duration, power_w)
-
-                    async_dispatcher_send(hass, f"{DOMAIN}_force_charge_state", {
-                        "active": True,
-                        "expires_at": force_charge_state["expires_at"].isoformat(),
-                        "duration": duration,
-                    })
-
-                    if force_charge_state.get("cancel_expiry_timer"):
-                        force_charge_state["cancel_expiry_timer"]()
-
-                    controller_generation = solaredge_coord.intent_generation
-
-                    async def auto_restore_charge_solaredge(_now):
-                        if _command_generation[0] != _restore_gen:
-                            _LOGGER.debug("SolarEdge force charge timer superseded — skipping restore")
-                            return
-                        if force_charge_state["active"]:
-                            _LOGGER.info("SolarEdge force charge expired, auto-restoring")
-                            await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {"source": "force_timer", "_allow_monitoring_restore": True, "_solaredge_generation": controller_generation}, blocking=True)
-
-                    force_charge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
-                        hass,
-                        auto_restore_charge_solaredge,
-                        force_charge_state["expires_at"],
-                    )
-                    try:
-                        await persist_force_mode_state()
-                    except Exception:
-                        # The command was already confirmed and its expiry
-                        # timer is armed. Keep the in-memory state and
-                        # response truthful if only restart persistence
-                        # fails, matching the SolarEdge discharge contract.
-                        _LOGGER.exception(
-                            "SolarEdge force charge is active but its "
-                            "restart state could not be persisted"
-                        )
-                        return {
-                            "success": True,
-                            "warning": "Force charge is active, but its restart state could not be saved.",
-                        }
-                    return {"success": True}
-                else:
-                    force_charge_state["active"] = False
-                    _LOGGER.error("SolarEdge force charge failed")
-                    hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "SolarEdge command was not confirmed; check control health before retrying"))
-                    raise HomeAssistantError("SolarEdge force charge was not confirmed; check control health")
-            except HomeAssistantError:
-                raise
-            except Exception as e:
-                force_charge_state["active"] = False
-                _LOGGER.error(f"Error in SolarEdge force charge: {e}", exc_info=True)
-                hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "SolarEdge entity write error"))
-                raise HomeAssistantError("SolarEdge force charge failed; check control health") from e
 
         is_anker_solix_local = entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_ANKER_SOLIX
         if is_anker_solix_local:
@@ -35575,11 +35583,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not monitoring_mode:
                 suppress_notification = True
 
-        # Cancel any pending expiry timers and advance the generation counter
-        # synchronously — before any await — so no queued auto-restore callback
-        # can interfere with this restore operation.
-        _cancel_all_force_timers("restore_normal")
-        _command_generation[0] += 1
+        # SolarEdge must keep its existing force lifecycle intact until its
+        # controller confirms the restore. Other integrations retain the
+        # historical pre-I/O cancellation rule so queued callbacks cannot race
+        # their restore operations.
+        if solaredge_restore_coordinator is None:
+            _cancel_all_force_timers("restore_normal")
+            _command_generation[0] += 1
         _restore_generation = _command_generation[0]
         _restore_reserve_generation = _tesla_reserve_generation[0]
 
@@ -36407,6 +36417,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 if _restore_superseded("SolarEdge restore"):
                     return
+
+                # The controller is now confirmed normal, so retire the prior
+                # local timer and state together. A rejected/uncertain result
+                # above deliberately leaves that cleanup path untouched.
+                _cancel_all_force_timers("confirmed SolarEdge restore_normal")
+                _command_generation[0] += 1
 
                 if source in ("user", "manual", "unknown", "hold_soc_cleanup"):
                     if self_consumption_state.get("active"):

@@ -42,6 +42,21 @@ def _load_manual_branch(service, namespace):
     return namespace["invoke"]
 
 
+def _load_setup_helper(name, namespace):
+    node = next(
+        node for node in _setup_node().body if getattr(node, "name", None) == name
+    )
+    exec(  # noqa: S102 - Execute repository code without importing Home Assistant.
+        compile(
+            ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
+            str(INIT_PATH),
+            "exec",
+        ),
+        namespace,
+    )
+    return namespace[name]
+
+
 def _load_solaredge_release_preflight(service, namespace):
     """Run the actual pre-arm SolarEdge gate without importing Home Assistant."""
     handler = next(node for node in _setup_node().body if getattr(node, "name", None) == service)
@@ -115,9 +130,65 @@ def _context(method, outcome):
         "dt_util": SimpleNamespace(utcnow=lambda: datetime(2026, 9, 5, tzinfo=timezone.utc)),
         "timedelta": timedelta,
         "_restore_superseded": Mock(return_value=False),
+        "_cancel_all_force_timers": Mock(),
+        "_command_generation": [0],
         "suppress_notification": True,
     }
     return namespace, coordinator, events
+
+
+@pytest.mark.parametrize("direction", ["charge", "discharge"])
+def test_solaredge_failed_transition_preserves_previous_force_lifecycle(direction):
+    """A rejected replacement command cannot remove the active cleanup timer."""
+    prior_timer = Mock()
+    previous_state = {
+        "active": True,
+        "expires_at": "existing-expiry",
+        "cancel_expiry_timer": prior_timer,
+        "duration": 30,
+    }
+    primary_state = {"active": False}
+    cancel_timers = Mock()
+    persist = AsyncMock()
+    namespace = {
+        "hass": SimpleNamespace(),
+        "DOMAIN": "power_sync",
+        "SERVICE_RESTORE_NORMAL": "restore_normal",
+        "force_charge_state": primary_state if direction == "charge" else previous_state,
+        "force_discharge_state": primary_state if direction == "discharge" else previous_state,
+        "self_consumption_state": {"active": False},
+        "_clear_self_consumption_state": Mock(),
+        "_cancel_all_force_timers": cancel_timers,
+        "_command_generation": [7],
+        "dt_util": SimpleNamespace(
+            utcnow=lambda: datetime(2026, 9, 9, tzinfo=timezone.utc)
+        ),
+        "timedelta": timedelta,
+        "_LOGGER": Mock(),
+        "HomeAssistantError": RuntimeError,
+        "async_dispatcher_send": Mock(),
+        "async_track_point_in_utc_time": Mock(return_value=Mock()),
+        "persist_force_mode_state": persist,
+    }
+    helper = _load_setup_helper("_commit_solaredge_force_transition", namespace)
+    writer = AsyncMock(return_value=False)
+    coordinator = SimpleNamespace(intent_generation=11)
+
+    with pytest.raises(RuntimeError, match=f"force {direction} was not confirmed"):
+        asyncio.run(helper(direction, 15, 2000, "user", coordinator, writer))
+
+    assert previous_state == {
+        "active": True,
+        "expires_at": "existing-expiry",
+        "cancel_expiry_timer": prior_timer,
+        "duration": 30,
+    }
+    assert primary_state == {"active": False}
+    cancel_timers.assert_not_called()
+    prior_timer.assert_not_called()
+    persist.assert_not_awaited()
+    namespace["async_dispatcher_send"].assert_not_called()
+    writer.assert_awaited_once()
 
 
 @pytest.mark.parametrize("direction", ["charge", "discharge"])
@@ -125,6 +196,7 @@ def _context(method, outcome):
 def test_manual_force_response_requires_confirmed_write(direction, outcome):
     method = f"force_{direction}"
     namespace, coordinator, events = _context(method, outcome)
+    _load_setup_helper("_commit_solaredge_force_transition", namespace)
     invoke = _load_manual_branch(f"handle_{method}", namespace)
     try:
         result = asyncio.run(invoke(SimpleNamespace(data={})))
@@ -153,6 +225,7 @@ def test_manual_force_response_requires_confirmed_write(direction, outcome):
 
 def test_solaredge_force_discharge_persistence_failure_keeps_confirmed_state_active():
     namespace, coordinator, _events = _context("force_discharge", True)
+    _load_setup_helper("_commit_solaredge_force_transition", namespace)
     namespace["persist_force_mode_state"] = AsyncMock(
         side_effect=OSError("storage unavailable")
     )
@@ -169,6 +242,7 @@ def test_solaredge_force_discharge_persistence_failure_keeps_confirmed_state_act
 
 def test_solaredge_force_charge_persistence_failure_keeps_confirmed_state_active():
     namespace, coordinator, _events = _context("force_charge", True)
+    _load_setup_helper("_commit_solaredge_force_transition", namespace)
     namespace["persist_force_mode_state"] = AsyncMock(
         side_effect=OSError("storage unavailable")
     )
@@ -276,4 +350,10 @@ def test_manual_restore_response_requires_confirmed_write(outcome):
         assert namespace["force_discharge_state"]["active"] is True
         namespace["persist_force_mode_state"].assert_not_awaited()
         namespace["async_dispatcher_send"].assert_not_called()
+    if outcome:
+        namespace["_cancel_all_force_timers"].assert_called_once_with(
+            "confirmed SolarEdge restore_normal"
+        )
+    else:
+        namespace["_cancel_all_force_timers"].assert_not_called()
     coordinator.restore_normal.assert_awaited_once()
