@@ -618,6 +618,51 @@ def test_fleet_stale_active_power_is_unavailable_across_status_surfaces():
     assert loadpoint["confidence"] == "unknown"
 
 
+def test_fleet_active_unavailable_power_stays_active_and_incomplete(monkeypatch):
+    """Ticket #49: Fleet charging state must not turn missing watts into idle."""
+    power_sync = _power_sync_module()
+    ev_load = importlib.import_module("power_sync.ev_load")
+    loadpoint_status = importlib.import_module(
+        "power_sync.automations.loadpoint_status"
+    )
+    now = datetime.now(timezone.utc)
+    hass = _tesla_hass([
+        _State(
+            "sensor.primary_ev_charger_power",
+            "unavailable",
+            {"unit_of_measurement": "kW"},
+            last_updated=now,
+        ),
+        _State("sensor.primary_ev_charging_state", "charging", last_updated=now),
+        _State("binary_sensor.primary_ev_charge_cable", "on", last_updated=now),
+        _State("device_tracker.primary_ev_location", "home", last_updated=now),
+    ])
+
+    async def no_sigenergy_charger(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        power_sync, "_read_sigenergy_charger_state_for_entry", no_sigenergy_charger
+    )
+
+    vehicle = power_sync._get_ev_vehicles_status(hass, _Entry())[0]
+    observations = asyncio.run(
+        power_sync._get_ev_load_observations(hass, _Entry(), [vehicle])
+    )
+    snapshot = ev_load.aggregate_ev_load(observations, at=now)
+    loadpoint = loadpoint_status.build_loadpoint_status({}, [vehicle])[0]
+
+    assert vehicle["is_charging"] is True
+    assert vehicle["power_available"] is False
+    assert observations[0].power_kw is None
+    assert observations[0].active is True
+    assert snapshot.quality == ev_load.EvLoadQuality.INCOMPLETE
+    assert snapshot.unavailable_active_keys == ("vehicle:5yjtest0000000001",)
+    assert loadpoint["actual_charging"] is True
+    assert loadpoint["current_power_kw"] is None
+    assert loadpoint["confidence"] == "unknown"
+
+
 def test_both_provider_ble_bridge_coalesces_without_hiding_fleet_only_vehicle():
     power_sync = _power_sync_module()
     primary_vin = "5YJTEST0000000001"

@@ -1376,6 +1376,10 @@ def _apply_wall_connector_observation(
             and wc_power_kw < _MIN_TESLA_CHARGING_POWER_KW
         )
         if direct_is_current(power_observed_at):
+            # A Wall Connector reading is a direct current measurement for
+            # this physical vehicle. It supersedes an earlier unavailable
+            # Fleet reading when the connector safely matches the vehicle.
+            vehicle.pop("power_available", None)
             if stopped_at_zero:
                 vehicle["ev_power_kw"] = 0.0
                 vehicle.pop("auxiliary_power_kw", None)
@@ -2078,19 +2082,20 @@ def _get_ev_vehicles_status(hass, entry) -> list:
             "ev_power_kw": ev_power_kw,
             "ev_soc": ev_soc,
             "is_connected": is_connected,
-            "is_charging": is_charging and ev_power_kw > 0.05,
+            # Fleet can report an active charging state before it has a usable
+            # watt reading. Preserve that state so unavailable power cannot
+            # masquerade as a measured idle zero downstream.
+            "is_charging": is_charging,
             "_charging_state_known": charging_state_known,
             "_observed_at": vehicle_observed_at,
             "_charging_observed_at": charging_observed_at,
             "_connected_observed_at": vehicle_connected_observed_at,
         }
-        if (
-            is_charging
-            and measured_power_seen
-            and measured_power_observed_at is not None
-        ):
-            vehicle_status["power_available"] = is_current_ev_power_observation(
-                measured_power_observed_at
+        if is_charging:
+            vehicle_status["power_available"] = bool(
+                measured_power_seen
+                and measured_power_observed_at is not None
+                and is_current_ev_power_observation(measured_power_observed_at)
             )
         if site_presence is not None:
             vehicle_status["site_presence"] = site_presence
@@ -2582,13 +2587,18 @@ async def _get_ev_load_observations(hass, entry, vehicles=None):
         else:
             physical_key = f"vehicle:{_vehicle_identity_key(vehicle_id)}"
             kind = EvMeasurementKind.VEHICLE
+        power_available = vehicle.get("power_available") is not False
         observations.append(
             EvLoadObservation(
                 physical_load_key=physical_key,
                 source_key=charger_id or str(vehicle.get("vehicle_id") or vehicle_id),
                 power_kw=(
-                    float(vehicle.get("ev_power_kw") or 0.0)
-                    + float(vehicle.get("auxiliary_power_kw") or 0.0)
+                    (
+                        float(vehicle.get("ev_power_kw") or 0.0)
+                        + float(vehicle.get("auxiliary_power_kw") or 0.0)
+                    )
+                    if power_available
+                    else None
                 ),
                 observed_at=(
                     _ev_observed_at(vehicle.get("observed_at"))
