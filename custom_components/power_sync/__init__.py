@@ -16488,10 +16488,15 @@ class EVVehicleCommandView(HomeAssistantView):
                     "data": {"message": message}
                 })
             else:
+                # A command that reached a known, user-safe rejection path is
+                # an application result, not an unexpected HTTP failure.  HA's
+                # callApi rejects non-2xx responses before the dashboard can
+                # read this envelope, which would discard the safe boundary
+                # supplied by the action layer.
                 return web.json_response({
                     "success": False,
                     "error": message
-                }, status=500)
+                })
 
         except Exception as e:
             _LOGGER.error(f"Error executing vehicle command: {e}", exc_info=True)

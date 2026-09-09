@@ -131,6 +131,51 @@ def test_manual_start_returns_the_safe_generic_failure_to_the_ui():
     assert message == "Generic Charger switch service for switch.garage_ev failed"
 
 
+def test_known_manual_command_rejection_is_a_resolved_application_response():
+    """Keep a safe action failure visible to the dashboard's response branch."""
+    class _Logger:
+        @staticmethod
+        def info(*_args, **_kwargs):
+            pass
+
+    post = _command_view_method(
+        "post", {"web": type("Web", (), {}), "_LOGGER": _Logger()}
+    )
+
+    class _Request:
+        async def json(self):
+            return {
+                "command": "start_policy_charging",
+                "policy": "full_grid_solar",
+                "duration_minutes": 60,
+            }
+
+    class _Web:
+        @staticmethod
+        def json_response(payload, **kwargs):
+            return {"payload": payload, "status": kwargs.get("status", 200)}
+
+    post.__globals__["web"] = _Web
+
+    class _View:
+        @staticmethod
+        def _get_vin_from_vehicle_id(_vehicle_id):
+            return "generic_ev"
+
+        async def _start_policy_charging(self, _policy, _vehicle, _duration):
+            return False, "Generic Charger switch service for switch.garage_ev failed"
+
+    response = asyncio.run(post(_View(), _Request(), "generic_ev"))
+
+    assert response == {
+        "payload": {
+            "success": False,
+            "error": "Generic Charger switch service for switch.garage_ev failed",
+        },
+        "status": 200,
+    }
+
+
 def test_manual_owner_guard_uses_manual_takeover_policy():
     source = INIT_PATH.read_text()
     method_start = source.index(
