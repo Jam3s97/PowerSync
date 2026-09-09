@@ -28366,7 +28366,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "(export_earnings=%.2fc)",
                         export_earnings,
                     )
-                    success = await sungrow_coord.set_export_limit(None)
+                    success = await sungrow_coord.restore_curtailment_export_limit()
                     if success:
                         hass.data[DOMAIN][entry.entry_id][
                             "sungrow_curtailment_state"
@@ -28421,7 +28421,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         export_earnings,
                         home_load_w,
                     )
-                    success = await sungrow_coord.set_export_limit(export_limit_w)
+                    success = await sungrow_coord.set_curtailment_export_limit(export_limit_w)
                     if success:
                         hass.data[DOMAIN][entry.entry_id][
                             "sungrow_curtailment_state"
@@ -28430,6 +28430,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             "sungrow_power_limit_w"
                         ] = export_limit_w
                     else:
+                        hass.data[DOMAIN][entry.entry_id][
+                            "sungrow_curtailment_state"
+                        ] = "pending"
                         _LOGGER.error("Sungrow set_export_limit(%d) failed", export_limit_w)
             elif native_available:
                 if current_state != "normal":
@@ -28437,7 +28440,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "Sungrow curtailment RESTORED: export_earnings=%.2fc (>=1c) -> normal export",
                         export_earnings,
                     )
-                    success = await sungrow_coord.set_export_limit(None)
+                    success = await sungrow_coord.restore_curtailment_export_limit()
                     if success:
                         hass.data[DOMAIN][entry.entry_id][
                             "sungrow_curtailment_state"

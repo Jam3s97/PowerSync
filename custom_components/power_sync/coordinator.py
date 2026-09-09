@@ -7311,7 +7311,9 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         )
         self._pre_control_export_limit_captured = True
 
-    async def _persist_export_control_state(self, target_export_w: int) -> bool:
+    async def _persist_export_control_state(
+        self, target_export_w: int, *, source: str | None = None
+    ) -> bool:
         """Persist temporary Sungrow export ownership before changing registers."""
         store = getattr(self, "_export_control_store", None)
         if store is None:
@@ -7324,6 +7326,8 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
             "baseline_limit_w": baseline_limit_w,
             "target_export_w": int(target_export_w),
         }
+        if source is not None:
+            state["source"] = source
         try:
             await store.async_save(state)
         except Exception as err:
@@ -7394,7 +7398,20 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
             f"{baseline_limit_w}W" if baseline_limit_w is not None else "disabled",
         )
         try:
-            restored = await self.restore_normal()
+            source = state.get("source")
+            if source == "curtailment":
+                restored = await self.restore_curtailment_export_limit()
+            elif source in (None, "force_grid_export"):
+                # Older persisted records predate the source field and were
+                # created by force_grid_export, whose full restore is retained.
+                restored = await self.restore_normal()
+            else:
+                _LOGGER.warning(
+                    "Persisted Sungrow export state has an unknown source %r; "
+                    "leaving it intact for recovery",
+                    source,
+                )
+                return False
             return restored
         except Exception as err:
             _LOGGER.warning(
@@ -7790,6 +7807,31 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         async with self._modbus_lock, self._controller:
             return await self._controller.set_export_limit(watts)
 
+    async def set_curtailment_export_limit(self, watts: int) -> bool:
+        """Apply a temporary optimizer curtailment limit with recoverable ownership."""
+        if not self._native_control_allowed("Sungrow curtailment export limit"):
+            return False
+        async with self._modbus_lock, self._controller:
+            await self._capture_export_limit_for_restore()
+            if not await self._persist_export_control_state(
+                watts, source="curtailment"
+            ):
+                return False
+            return await self._controller.set_export_limit(watts)
+
+    async def restore_curtailment_export_limit(self) -> bool:
+        """Restore only a temporary curtailment limit owned by PowerSync."""
+        if not self._native_control_allowed("Sungrow curtailment export restore"):
+            return False
+        if not getattr(self, "_pre_control_export_limit_captured", False):
+            _LOGGER.warning(
+                "Sungrow curtailment restore has no PowerSync ownership record; "
+                "leaving the export limit unchanged"
+            )
+            return False
+        async with self._modbus_lock, self._controller:
+            return await self._restore_captured_export_limit()
+
     async def async_shutdown(self) -> None:
         """Stop polling and disconnect from Sungrow after active Modbus work."""
         self.update_interval = None
@@ -8174,6 +8216,14 @@ class DualSungrowCoordinator(DataUpdateCoordinator):
     async def set_export_limit(self, watts: int | None) -> bool:
         """Set export limit on primary only (it's grid-facing)."""
         return await self._coord1.set_export_limit(watts)
+
+    async def set_curtailment_export_limit(self, watts: int) -> bool:
+        """Apply a recoverable curtailment limit on the grid-facing inverter."""
+        return await self._coord1.set_curtailment_export_limit(watts)
+
+    async def restore_curtailment_export_limit(self) -> bool:
+        """Restore the grid-facing inverter's PowerSync-owned curtailment limit."""
+        return await self._coord1.restore_curtailment_export_limit()
 
     async def async_shutdown(self) -> None:
         """Shutdown both sub-coordinators."""

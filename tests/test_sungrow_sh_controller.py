@@ -2713,6 +2713,67 @@ def test_sungrow_spread_export_uses_export_limit_not_discharge_cap():
     assert fake_controller.export_limits == [4400, 5000]
 
 
+def test_sungrow_curtailment_limit_recovers_after_reload_without_mode_restore():
+    """Only a persisted curtailment owner may restore its temporary limit."""
+    SungrowEnergyCoordinator, restore = _load_sungrow_energy_coordinator()
+
+    async def run_restart_cycle():
+        controller = _FakeSungrowController()
+        controller.battery_data = {
+            "export_limit_enabled": False,
+            "export_limit_w": 0,
+        }
+        store = _FakeStore()
+
+        first = _new_sungrow_coordinator(SungrowEnergyCoordinator, controller)
+        first._export_control_store = store
+        first.data = dict(controller.battery_data)
+        applied = await first.set_curtailment_export_limit(0)
+        persisted = dict(store.data)
+
+        restarted = _new_sungrow_coordinator(SungrowEnergyCoordinator, controller)
+        restarted._export_control_store = store
+        recovered = await restarted.async_restore_persisted_export_control()
+        return applied, persisted, recovered, store, controller
+
+    try:
+        applied, persisted, recovered, store, controller = asyncio.run(run_restart_cycle())
+    finally:
+        restore()
+
+    assert applied
+    assert persisted == {
+        "active": True,
+        "baseline_enabled": False,
+        "baseline_limit_w": None,
+        "target_export_w": 0,
+        "source": "curtailment",
+    }
+    assert recovered
+    assert controller.export_limits == [0, None]
+    assert controller.restore_normal_calls == 0
+    assert store.data == {"active": False}
+
+
+def test_sungrow_curtailment_restore_does_not_clear_an_unowned_limit():
+    """A native/DNSP export limit is not safe for PowerSync to remove."""
+    SungrowEnergyCoordinator, restore = _load_sungrow_energy_coordinator()
+
+    async def run_restore():
+        controller = _FakeSungrowController()
+        coordinator = _new_sungrow_coordinator(SungrowEnergyCoordinator, controller)
+        coordinator.data = {"export_limit_enabled": True, "export_limit_w": 50}
+        return await coordinator.restore_curtailment_export_limit(), controller
+
+    try:
+        restored, controller = asyncio.run(run_restore())
+    finally:
+        restore()
+
+    assert not restored
+    assert controller.export_limits == []
+
+
 def test_sungrow_pending_export_restore_lifecycle_retries_failed_cleanup():
     SungrowEnergyCoordinator, restore = _load_sungrow_energy_coordinator()
 

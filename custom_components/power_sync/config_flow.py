@@ -7948,7 +7948,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             sungrow_coord = entry_data.get("sungrow_coordinator")
             if sungrow_coord and hasattr(sungrow_coord, "set_export_limit"):
                 try:
-                    success = await sungrow_coord.set_export_limit(None)
+                    restore = getattr(
+                        sungrow_coord, "restore_curtailment_export_limit", None
+                    )
+                    success = (
+                        await restore()
+                        if callable(restore)
+                        else await sungrow_coord.set_export_limit(None)
+                    )
                 except Exception as err:
                     _LOGGER.error("Sungrow curtailment restore failed: %s", err)
                 else:

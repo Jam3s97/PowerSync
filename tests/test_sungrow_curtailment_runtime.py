@@ -86,8 +86,8 @@ def test_sungrow_has_native_export_limit_curtailment_handler():
     assert "sungrow_power_limit_w" in handler
     assert "get_current_prices_for_curtailment" in handler
     assert "export_limit_w = 0" in handler
-    assert "await sungrow_coord.set_export_limit(export_limit_w)" in handler
-    assert "await sungrow_coord.set_export_limit(None)" in handler
+    assert "await sungrow_coord.set_curtailment_export_limit(export_limit_w)" in handler
+    assert "await sungrow_coord.restore_curtailment_export_limit()" in handler
     assert "ac_inverter_is_same_hybrid" in handler
     assert "await apply_inverter_curtailment(" in handler
 
@@ -97,10 +97,12 @@ def test_sungrow_native_curtailment_uses_zero_site_export_not_home_load_limit():
 
     load_index = handler.index("home_load_w = int(live_status.get(\"load_power\", 0))")
     target_index = handler.index("export_limit_w = 0")
-    command_index = handler.index("await sungrow_coord.set_export_limit(export_limit_w)")
+    command_index = handler.index(
+        "await sungrow_coord.set_curtailment_export_limit(export_limit_w)"
+    )
 
     assert load_index < target_index < command_index
-    assert "await sungrow_coord.set_export_limit(home_load_w)" not in handler
+    assert "await sungrow_coord.set_curtailment_export_limit(home_load_w)" not in handler
     assert "zero-export limit" in handler
 
 
