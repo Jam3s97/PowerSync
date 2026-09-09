@@ -2230,6 +2230,33 @@ class SolcastForecaster:
                     )
                     return forecast
 
+            # Solcast Solar v4.6+ keeps its full cache on the loaded config
+            # entry rather than registering it in hass.data. Prefer that cache
+            # for the same reason as the legacy hass.data path above: the
+            # Today/Tomorrow entities cannot cover the late tail of a rolling
+            # optimizer horizon.
+            config_entries = getattr(self.hass, "config_entries", None)
+            async_entries = getattr(config_entries, "async_entries", None)
+            if callable(async_entries):
+                try:
+                    entries = async_entries("solcast_solar")
+                except Exception:
+                    entries = ()
+                for entry in entries or ():
+                    runtime_data = getattr(entry, "runtime_data", None)
+                    coordinator = getattr(runtime_data, "coordinator", None)
+                    solcast_api = getattr(coordinator, "solcast", None)
+                    if solcast_api is None:
+                        continue
+                    forecast = await self._extract_from_solcast_solar_integration(
+                        solcast_api, start_time, n_intervals
+                    )
+                    if forecast:
+                        _LOGGER.debug(
+                            "Using full solar forecast from Solcast Solar config-entry runtime data"
+                        )
+                        return forecast
+
             # Fallback: Read detailedForecast from Solcast sensor attributes.
             # This preserves compatibility with older integrations and users
             # that expose forecast sensors without hass.data internals.
