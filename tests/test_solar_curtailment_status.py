@@ -144,6 +144,32 @@ def test_dc_only_curtailment_requires_the_selected_brand_and_its_opt_in():
     assert effective_configuration(
         type("Entry", (), {"options": {"battery_system": "alphaess", "sigenergy_dc_curtailment_enabled": True}, "data": {}})()
     ) == (False, False)
+    assert effective_configuration(
+        type(
+            "Entry",
+            (),
+            {
+                "options": {},
+                "data": {
+                    "battery_system": "solaredge",
+                    "solaredge_dc_curtailment_enabled": True,
+                },
+            },
+        )()
+    ) == (False, True)
+    assert effective_configuration(
+        type(
+            "Entry",
+            (),
+            {
+                "options": {
+                    "battery_system": "solaredge",
+                    "solaredge_dc_curtailment_enabled": False,
+                },
+                "data": {},
+            },
+        )()
+    ) == (False, False)
 
 
 def test_every_automatic_entry_point_uses_the_effective_configuration():
@@ -172,6 +198,17 @@ def test_every_automatic_entry_point_uses_the_effective_configuration():
     sensor_source = SENSOR_PATH.read_text()
     assert "any(get_effective_solar_curtailment_configuration(entry))" in sensor_source
     assert "return any(get_effective_solar_curtailment_configuration(self._entry))" in sensor_source
+
+
+def test_backend_feature_metadata_uses_the_effective_configuration():
+    source = INIT_PATH.read_text()
+
+    assert source.count(
+        "solar_curtailment_enabled = any(\n"
+        "                get_effective_solar_curtailment_configuration(entry)\n"
+        "            )"
+    ) == 3
+    assert '"solar_curtailment": any(\n                    get_effective_solar_curtailment_configuration(entry)\n                )' in source
 
 
 def test_sensor_and_dashboard_expose_pending_as_distinct_state():

@@ -7410,9 +7410,8 @@ class PowerwallSettingsView(HomeAssistantView):
             entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             curtailment_state = entry_data.get("alphaess_curtailment_state", "normal")
             grid_export_rule = "never" if curtailment_state == "curtailed" else "battery_ok"
-            solar_curtailment_enabled = entry.options.get(
-                CONF_BATTERY_CURTAILMENT_ENABLED,
-                entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False),
+            solar_curtailment_enabled = any(
+                get_effective_solar_curtailment_configuration(entry)
             )
             return web.json_response(
                 {
@@ -7432,9 +7431,8 @@ class PowerwallSettingsView(HomeAssistantView):
             entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             curtailment_state = entry_data.get("goodwe_curtailment_state", "normal")
             grid_export_rule = "never" if curtailment_state == "curtailed" else "battery_ok"
-            solar_curtailment_enabled = entry.options.get(
-                CONF_BATTERY_CURTAILMENT_ENABLED,
-                entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False),
+            solar_curtailment_enabled = any(
+                get_effective_solar_curtailment_configuration(entry)
             )
             return web.json_response(
                 {
@@ -7555,9 +7553,8 @@ class PowerwallSettingsView(HomeAssistantView):
 
             # Check if solar curtailment is enabled - if so, use server's target rule
             # (more accurate than stale Tesla API values)
-            solar_curtailment_enabled = entry.options.get(
-                CONF_BATTERY_CURTAILMENT_ENABLED,
-                entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
+            solar_curtailment_enabled = any(
+                get_effective_solar_curtailment_configuration(entry)
             )
 
             if solar_curtailment_enabled:
@@ -10788,9 +10785,8 @@ class ConfigView(HomeAssistantView):
 
             # Build features dict based on configuration
             features = {
-                "solar_curtailment": entry.options.get(
-                    CONF_BATTERY_CURTAILMENT_ENABLED,
-                    entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
+                "solar_curtailment": any(
+                    get_effective_solar_curtailment_configuration(entry)
                 ),
                 "inverter_control": entry.options.get(
                     CONF_AC_INVERTER_CURTAILMENT_ENABLED,

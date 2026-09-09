@@ -860,10 +860,13 @@ def test_goodwe_force_discharge_fails_closed_when_curtailment_restore_fails():
             "goodwe_discharge_result =", handler.index('"optimizer force discharge"')
         )
     ]
+    manual_start = handler.index(
+        'lambda _guarded_w: _restore_goodwe_curtailment_for_export(\n'
+        '                        entry_data,\n'
+        '                        "force discharge",'
+    )
     manual_branch = handler[
-        handler.index('"force discharge"', handler.index('"optimizer force discharge"') + 1) : handler.index(
-            "discharge_result =", handler.index('"force discharge"', handler.index('"optimizer force discharge"') + 1)
-        )
+        manual_start : handler.index("discharge_result =", manual_start)
     ]
 
     assert "goodwe_curtailment_restore_result" in optimizer_branch
@@ -915,7 +918,7 @@ def test_solaredge_force_dispatch_releases_active_power_curtailment_first():
         "await solaredge_coord.force_charge(duration, power_w=power_w, automatic=True)"
     )
     manual_charge_release = charge_handler.rindex(
-        'await _restore_solaredge_curtailment_for_dispatch(\n                    entry_data,\n                    "force charge",'
+        'await _restore_solaredge_curtailment_for_dispatch(\n                entry_data,\n                "force charge",'
     )
     manual_charge_call = charge_handler.rindex(
         'charge_result = await solaredge_coord.force_charge(duration, power_w=power_w, automatic=source == "optimizer")'
@@ -929,7 +932,7 @@ def test_solaredge_force_dispatch_releases_active_power_curtailment_first():
         "lambda guarded_w: solaredge_coord.force_discharge("
     )
     manual_discharge_release = discharge_handler.rindex(
-        'lambda _guarded_w: _restore_solaredge_curtailment_for_dispatch(\n                        entry_data,\n                        "force discharge",'
+        'lambda _guarded_w: _restore_solaredge_curtailment_for_dispatch(\n                    entry_data,\n                    "force discharge",'
     )
     manual_discharge_call = discharge_handler.rindex(
         "lambda guarded_w: solaredge_coord.force_discharge("
@@ -1110,6 +1113,7 @@ def test_solar_curtailment_monitoring_mode_blocks_automatic_command_routes(
         ),
         "DEFAULT_CURTAILMENT_CONTROL_IN_MONITORING_MODE": False,
         "CONF_BATTERY_CURTAILMENT_ENABLED": "battery_curtailment_enabled",
+        "_effective_solar_curtailment_enabled": lambda: True,
         "_LOGGER": SimpleNamespace(info=lambda message: messages.append(message)),
     }
     exec(
@@ -1162,6 +1166,7 @@ def test_solar_curtailment_monitoring_mode_explicit_permission_routes_control(
         ),
         "DEFAULT_CURTAILMENT_CONTROL_IN_MONITORING_MODE": False,
         "CONF_BATTERY_CURTAILMENT_ENABLED": "battery_curtailment_enabled",
+        "_effective_solar_curtailment_enabled": lambda: True,
         "_LOGGER": SimpleNamespace(
             info=lambda *args, **kwargs: None,
             debug=lambda *args, **kwargs: None,
