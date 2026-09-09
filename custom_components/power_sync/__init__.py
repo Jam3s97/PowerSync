@@ -2291,7 +2291,17 @@ def _get_ev_vehicles_status(hass, entry) -> list:
             "power_available": power_available,
             "ev_soc": ev_soc,
             "is_connected": is_connected,
-            "is_charging": ev_power_kw > 0.05,
+            # Keep a fresh BLE Charging state distinct from the availability
+            # of its watt measurement. This informs status only; commands
+            # still use power_available and fresh measurement gates.
+            "is_charging": (
+                is_connected
+                and (
+                    str(getattr(charge_state, "state", "")).strip().lower()
+                    == "charging"
+                    or ev_power_kw > 0.05
+                )
+            ),
             "_observed_at": (
                 ble_power_observed_at
                 or ble_current_observed_at
@@ -16537,12 +16547,13 @@ class SolarSurplusStatusView(HomeAssistantView):
                 battery_soc = foxess_coordinator.data.get("battery_level", 0)
                 _LOGGER.debug(f"Solar surplus status from foxess_coordinator: battery_soc={battery_soc}%")
 
-            # Calculate surplus
+            # Calculate surplus. Home Load can be deliberately unavailable
+            # while an active EV has no attributable measured power.
             live_status = {
-                "solar_power": solar_power_kw * 1000,  # _calculate_solar_surplus expects watts
-                "grid_power": grid_power_kw * 1000,
-                "battery_power": battery_power_kw * 1000,
-                "load_power": load_power_kw * 1000,
+                "solar_power": None if solar_power_kw is None else solar_power_kw * 1000,
+                "grid_power": None if grid_power_kw is None else grid_power_kw * 1000,
+                "battery_power": None if battery_power_kw is None else battery_power_kw * 1000,
+                "load_power": None if load_power_kw is None else load_power_kw * 1000,
                 "battery_soc": battery_soc,
             }
             solar_config = get_stored_solar_surplus_config(entry_data)
@@ -19166,11 +19177,21 @@ class EVLoadpointStatusView(HomeAssistantView):
                 get_ev_ownerships(self._hass, self._config_entry),
                 get_ev_last_commands(self._hass, self._config_entry),
             )
+            has_unknown_active_ev_power = any(
+                loadpoint.get("actual_charging")
+                and loadpoint.get("current_power_kw") is None
+                for loadpoint in preliminary_loadpoints
+            )
             total_ev_power_kw = sum(
                 max(0.0, float(loadpoint.get("current_power_kw") or 0))
                 for loadpoint in preliminary_loadpoints
             )
-            site["ev_power_kw"] = round(total_ev_power_kw, 2)
+            # Never turn an active unavailable reading into a false site-wide
+            # 0 kW observation. Keep the numeric sum private to the surplus
+            # estimate below; it is not a measured aggregate.
+            site["ev_power_kw"] = (
+                None if has_unknown_active_ev_power else round(total_ev_power_kw, 2)
+            )
             site["surplus_kw"] = round(
                 _calculate_solar_surplus(
                     live_status,

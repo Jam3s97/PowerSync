@@ -1518,10 +1518,9 @@ import {
     _isEvCharging(evData) {
       const evMinW = Math.max(0, safeNum(this._config.ev_min_w, 150));
       const vehicles = Array.isArray(evData?.vehicles) ? evData.vehicles : [];
-      if (vehicles.some((vehicle) => vehicle.hasPowerEntity)) {
-        return vehicles.some((vehicle) => vehicle.power > evMinW);
-      }
-      return vehicles.some((vehicle) => vehicle.switchOn);
+      // Semantic charging status is valid even when the power measurement is
+      // unavailable; it must not fabricate a watt flow.
+      return vehicles.some((vehicle) => vehicle.power > evMinW || vehicle.switchOn);
     }
 
     _collectEvData() {
@@ -1582,12 +1581,16 @@ import {
             friendlyEntityName(presenceState) ||
             friendlyEntityName(switchState)
           );
-          const rawSignedPower = toWatt(powerState);
-          const signedPower = canonicalSitePresence === 'away' ? 0 : rawSignedPower;
+          const rawSignedPower = toOptionalWatt(powerState);
+          const powerKnown = Number.isFinite(rawSignedPower);
+          const signedPower = canonicalSitePresence === 'away'
+            ? 0
+            : (powerKnown ? rawSignedPower : 0);
           return {
             key: slot.key,
             configured,
-            hasPowerEntity: !!powerState,
+            hasPowerEntity: powerKnown,
+            powerKnown,
             hasBatteryEntity: Number.isFinite(batteryPct),
             power: signedPower,
             drawPower: Math.max(0, signedPower),
@@ -2285,10 +2288,10 @@ import {
       this._setText('#flow-battery-power', batteryConfigured ? (Number.isFinite(batteryPower) ? this._formatKW(batteryPower) : '--') : '');
       this._setText('#flow-battery-pct', batteryConfigured ? (Number.isFinite(batteryLevel) ? `${Math.round(batteryLevel)}%` : '--') : '');
       this._setText('#flow-ev-label', ev1.labelText || this._t('card.node.ev', 'EV'));
-      this._setText('#flow-ev-power', this._formatKW(ev1.power || 0));
+      this._setText('#flow-ev-power', ev1.powerKnown ? this._formatKW(ev1.power) : '--');
       this._setText('#flow-ev-pct', ev1.batteryText || '--%');
       this._setText('#flow-ev2-label', ev2.labelText || 'EV 2');
-      this._setText('#flow-ev2-power', this._formatKW(ev2.power || 0));
+      this._setText('#flow-ev2-power', ev2.powerKnown ? this._formatKW(ev2.power) : '--');
       this._setText('#flow-ev2-pct', ev2.batteryText || '--%');
 
       const batteryArrowEl = this.shadowRoot.querySelector('#flow-battery-direction');

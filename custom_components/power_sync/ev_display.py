@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import math
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -17,6 +18,15 @@ def _float_value(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_float_value(value: Any) -> float | None:
+    """Return a finite display measurement without inventing a zero."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _is_charging(loadpoint: dict[str, Any]) -> bool:
@@ -49,7 +59,7 @@ def display_snapshot_to_sensor_data(snapshot: dict[str, Any]) -> dict[str, Any]:
     site = snapshot.get("site") or {}
     active = active_display_loadpoint(snapshot)
     data: dict[str, Any] = {
-        "ev_power_kw": _float_value(site.get("ev_power_kw")),
+        "ev_power_kw": _optional_float_value(site.get("ev_power_kw")),
         "vehicle_count": len(loadpoints),
         "loadpoint_count": len(loadpoints),
         "observation_quality": site.get("observation_quality"),
@@ -78,7 +88,7 @@ def display_snapshot_to_widgets(snapshot: dict[str, Any]) -> list[dict[str, Any]
     surplus_kw = _float_value(site.get("surplus_kw"))
     widgets = []
     for loadpoint in snapshot.get("loadpoints") or []:
-        power_kw = _float_value(loadpoint.get("current_power_kw"))
+        power_kw = _optional_float_value(loadpoint.get("current_power_kw"))
         widgets.append(
             {
                 "vehicle_name": loadpoint.get("vehicle_name") or "EV",
@@ -90,9 +100,13 @@ def display_snapshot_to_widgets(snapshot: dict[str, Any]) -> list[dict[str, Any]
                 "is_connected": bool(loadpoint.get("connected")),
                 "current_soc": loadpoint.get("soc") or 0,
                 "target_soc": loadpoint.get("target_soc") or 80,
-                "current_power_kw": round(power_kw, 2),
+                "current_power_kw": round(power_kw, 2) if power_kw is not None else None,
                 "source": loadpoint.get("source") or (
-                    "grid" if power_kw > ACTIVE_POWER_THRESHOLD_KW else "idle"
+                    "grid"
+                    if power_kw is not None and power_kw > ACTIVE_POWER_THRESHOLD_KW
+                    else "unknown"
+                    if power_kw is None
+                    else "idle"
                 ),
                 "eta_minutes": loadpoint.get("duration_minutes"),
                 "surplus_kw": round(surplus_kw, 2),

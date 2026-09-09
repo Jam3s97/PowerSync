@@ -69,7 +69,9 @@ def test_energy_flow_fences_away_canonical_vehicle_presence():
     source = ENERGY_FLOW_PATH.read_text()
 
     assert "canonicalSitePresence === 'away'" in source
-    assert "const signedPower = canonicalSitePresence === 'away' ? 0 : rawSignedPower" in source
+    assert "const rawSignedPower = toOptionalWatt(powerState)" in source
+    assert "const signedPower = canonicalSitePresence === 'away'" in source
+    assert ": (powerKnown ? rawSignedPower : 0);" in source
     assert "present: canonicalSitePresence === 'away'" in source
 
 

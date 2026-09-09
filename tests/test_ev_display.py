@@ -120,6 +120,33 @@ def test_auxiliary_power_does_not_override_canonical_idle_state() -> None:
     assert widgets[0]["is_charging"] is False
 
 
+def test_unknown_active_ev_power_is_not_projected_as_idle_zero() -> None:
+    """Ticket-36: semantic charging and measured watts are distinct facts."""
+    snapshot = {
+        "site": {"ev_power_kw": None, "observation_quality": "incomplete"},
+        "loadpoints": [
+            {
+                "loadpoint_id": "yf88",
+                "vehicle_name": "YF88",
+                "connected": True,
+                "actual_charging": True,
+                "status": "charging",
+                "current_amps": 7,
+                "current_power_kw": None,
+            }
+        ],
+    }
+
+    sensor = display_snapshot_to_sensor_data(snapshot)
+    widget = display_snapshot_to_widgets(snapshot)[0]
+
+    assert sensor["ev_power_kw"] is None
+    assert sensor["is_charging"] is True
+    assert widget["current_power_kw"] is None
+    assert widget["is_charging"] is True
+    assert widget["source"] == "unknown"
+
+
 def test_display_coordinator_shares_one_refresh_with_all_consumers() -> None:
     calls = 0
 
@@ -257,3 +284,6 @@ def test_ha_energy_flow_prefers_canonical_sensor_vehicle_attributes() -> None:
     assert "canonicalConnected ?? isTruthyPresenceState(presenceState)" in source
     assert "canonicalCharging ?? switchState?.state === 'on'" in source
     assert "vehicle.canonicalLabel || vehicle.customLabel" in source
+    assert "const rawSignedPower = toOptionalWatt(powerState)" in source
+    assert "powerKnown ? this._formatKW(ev1.power) : '--'" in source
+    assert "vehicle.power > evMinW || vehicle.switchOn" in source

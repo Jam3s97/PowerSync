@@ -1178,10 +1178,14 @@ def _observed_loadpoint(
         "status": status,
         "owner": (ownership or {}).get("owner") or "external",
         "owner_mode": (ownership or {}).get("owner_mode") or observation.get("owner_mode"),
-        "source": _loadpoint_source(
-            power_kw,
-            site_surplus_kw,
-            (ownership or {}).get("owner_mode") or observation.get("owner_mode"),
+        "source": (
+            _loadpoint_source(
+                power_kw,
+                site_surplus_kw,
+                (ownership or {}).get("owner_mode") or observation.get("owner_mode"),
+            )
+            if power_available
+            else "unknown"
         ),
         "current_power_kw": round(power_kw, 2) if power_available else None,
         "commanded_power_kw": None,
