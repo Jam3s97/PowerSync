@@ -923,7 +923,10 @@ from .currency import (
     normalize_currency,
 )
 from .inverters import get_inverter_controller
-from .curtailment_config import export_earnings_are_uneconomic
+from .curtailment_config import (
+    export_earnings_are_uneconomic,
+    get_effective_solar_curtailment_configuration,
+)
 from .tesla_ble import (
     get_tesla_ble_battery_state,
     get_tesla_ble_charge_current_state,
@@ -21046,6 +21049,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         )
 
+    def _effective_solar_curtailment_enabled() -> bool:
+        """Return whether this entry has a permitted automatic curtailment route."""
+        return any(get_effective_solar_curtailment_configuration(entry))
+
+    def _direct_dc_curtailment_write_allowed() -> bool:
+        """Fail closed before a native DC curtailment register write.
+
+        This check is repeated after price or ownership awaits so an options
+        reload or Monitoring Mode handoff cannot leave a queued direct write
+        authorized by stale configuration.
+        """
+        _battery_export, direct_dc_enabled = (
+            get_effective_solar_curtailment_configuration(entry)
+        )
+        return direct_dc_enabled and _monitoring_mode_allows_curtailment(
+            direct_dc_enabled
+        )
+
     def _demand_grid_charging_protection_active(
         now: datetime | None = None,
         *,
@@ -27551,6 +27572,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "headroom (export_earnings=%.2fc)",
                         export_earnings,
                     )
+                    if not _direct_dc_curtailment_write_allowed():
+                        return
                     success = await controller.restore()
                     if success:
                         entry_data["sigenergy_curtailment_state"] = "normal"
@@ -27601,6 +27624,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             "Sigenergy curtailment TRIGGERED: export_earnings=%.2fc (<1c) → zero export",
                             export_earnings,
                         )
+                    if not _direct_dc_curtailment_write_allowed():
+                        return
                     success = await controller.curtail()
                     if success:
                         entry_data["sigenergy_curtailment_state"] = "curtailed"
@@ -27616,6 +27641,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "Sigenergy curtailment RESTORED: export_earnings=%.2fc (>=1c) → normal export",
                         export_earnings,
                     )
+                    if not _direct_dc_curtailment_write_allowed():
+                        return
                     success = await controller.restore()
                     if success:
                         entry_data["sigenergy_curtailment_state"] = "normal"
@@ -27723,6 +27750,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "AlphaESS curtailment TRIGGERED: export_earnings=%.2fc (<1c) → zero export",
                         export_earnings,
                     )
+                    if not _direct_dc_curtailment_write_allowed():
+                        return
                     success = await controller.curtail()
                     if success:
                         hass.data[DOMAIN][entry.entry_id]["alphaess_curtailment_state"] = "curtailed"
@@ -27736,6 +27765,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "AlphaESS curtailment RESTORED: export_earnings=%.2fc (>=1c) → normal export",
                         export_earnings,
                     )
+                    if not _direct_dc_curtailment_write_allowed():
+                        return
                     success = await controller.restore()
                     if success:
                         hass.data[DOMAIN][entry.entry_id]["alphaess_curtailment_state"] = "normal"
@@ -27805,6 +27836,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
         controller = _get_solaredge_curtailment_controller(entry_data)
 
+        async def _checked_direct_operation(operation) -> bool:
+            """Recheck permission after the coordinator mutation lock is held."""
+            if not _direct_dc_curtailment_write_allowed():
+                return False
+            return await operation()
+
         try:
             if export_uneconomic:
                 if _solaredge_force_dispatch_active(entry_data):
@@ -27824,7 +27861,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "SolarEdge curtailment TRIGGERED: export_earnings=%.2fc (<1c) -> active power 0%%",
                         export_earnings,
                     )
-                    success = await _solaredge_curtailment_write(coordinator, controller, controller.curtail)
+                    success = await _solaredge_curtailment_write(
+                        coordinator,
+                        controller,
+                        lambda: _checked_direct_operation(controller.curtail),
+                    )
                     if success:
                         entry_data["solaredge_curtailment_state"] = "curtailed"
                     else:
@@ -27837,7 +27878,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "SolarEdge curtailment RESTORED: export_earnings=%.2fc (>=1c) -> active power 100%%",
                         export_earnings,
                     )
-                    success = await _solaredge_curtailment_write(coordinator, controller, controller.restore)
+                    success = await _solaredge_curtailment_write(
+                        coordinator,
+                        controller,
+                        lambda: _checked_direct_operation(controller.restore),
+                    )
                     if success:
                         entry_data["solaredge_curtailment_state"] = "normal"
                     else:
@@ -28508,10 +28553,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         4. If export price >= 1c: Restore normal export ('battery_ok')
         """
         # Check if curtailment is enabled
-        curtailment_enabled = bool(entry.options.get(
-            CONF_BATTERY_CURTAILMENT_ENABLED,
-            entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
-        ))
+        curtailment_enabled = _effective_solar_curtailment_enabled()
 
         if not curtailment_enabled:
             _LOGGER.debug("Solar curtailment is disabled, skipping check")
@@ -28889,10 +28931,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         Called by WebSocket callback - uses price data directly without REST API refresh.
         """
         # Check if curtailment is enabled
-        curtailment_enabled = bool(entry.options.get(
-            CONF_BATTERY_CURTAILMENT_ENABLED,
-            entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
-        ))
+        curtailment_enabled = _effective_solar_curtailment_enabled()
 
         if not curtailment_enabled:
             _LOGGER.debug("Solar curtailment is disabled, skipping check")
@@ -40917,10 +40956,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             coordinator.notify_websocket_update(prices_data)
 
             async def trigger_curtailment_check():
-                solar_curtailment_enabled = entry.options.get(
-                    CONF_BATTERY_CURTAILMENT_ENABLED,
-                    entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
-                )
+                solar_curtailment_enabled = _effective_solar_curtailment_enabled()
                 if not solar_curtailment_enabled:
                     return
                 try:
@@ -41327,10 +41363,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Triggers at :01:00, :06:00, :11:00, etc. - 60s after Amber price updates
     async def auto_curtailment_check(now):
         """Automatically check curtailment if enabled."""
-        curtailment_enabled = bool(entry.options.get(
-            CONF_BATTERY_CURTAILMENT_ENABLED,
-            entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False),
-        ))
+        curtailment_enabled = _effective_solar_curtailment_enabled()
         if not _monitoring_mode_allows_curtailment(curtailment_enabled):
             _LOGGER.info(
                 "[MONITORING] Would run scheduled solar curtailment — blocked by monitoring mode"
@@ -41353,10 +41386,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await asyncio.sleep(5)
         if entry.entry_id not in hass.data.get(DOMAIN, {}):
             return
-        curtailment_enabled = bool(entry.options.get(
-            CONF_BATTERY_CURTAILMENT_ENABLED,
-            entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False),
-        ))
+        curtailment_enabled = _effective_solar_curtailment_enabled()
         if not _monitoring_mode_allows_curtailment(curtailment_enabled):
             _LOGGER.info(
                 "[MONITORING] Would run startup solar curtailment — blocked by monitoring mode"

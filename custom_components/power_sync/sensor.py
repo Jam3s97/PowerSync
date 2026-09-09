@@ -32,7 +32,10 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
-from .curtailment_config import get_curtailment_price_thresholds
+from .curtailment_config import (
+    get_curtailment_price_thresholds,
+    get_effective_solar_curtailment_configuration,
+)
 from .registry_compat import iter_device_entries
 from .const import (
     CONF_POWERWALL_LOCAL_PAIRED,
@@ -2352,11 +2355,7 @@ async def async_setup_entry(
     _LOGGER.info("Tariff schedule sensor added for TOU visualization")
 
     # Add solar curtailment sensor if curtailment is enabled
-    curtailment_enabled = entry.options.get(
-        CONF_BATTERY_CURTAILMENT_ENABLED,
-        entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
-    )
-    if curtailment_enabled:
+    if any(get_effective_solar_curtailment_configuration(entry)):
         entities.append(
             SolarCurtailmentSensor(
                 hass=hass,
@@ -5313,13 +5312,8 @@ class SolarCurtailmentSensor(SensorEntity):
         return None
 
     def _curtailment_enabled(self) -> bool:
-        """Return whether battery curtailment is switched on for this entry."""
-        return bool(
-            self._entry.options.get(
-                CONF_BATTERY_CURTAILMENT_ENABLED,
-                self._entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False),
-            )
-        )
+        """Return whether the entry has an effective curtailment route."""
+        return any(get_effective_solar_curtailment_configuration(self._entry))
 
     def _export_uneconomic(self) -> bool:
         """Return whether the live feed-in price makes export uneconomic."""
@@ -5454,10 +5448,7 @@ class SolarCurtailmentSensor(SensorEntity):
         """Return additional attributes."""
         entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
         cached_rule = entry_data.get("cached_export_rule")
-        curtailment_enabled = self._entry.options.get(
-            CONF_BATTERY_CURTAILMENT_ENABLED,
-            self._entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
-        )
+        curtailment_enabled = self._curtailment_enabled()
         feedin_price = self._get_feedin_price()
         export_earnings = -feedin_price if feedin_price is not None else None
 

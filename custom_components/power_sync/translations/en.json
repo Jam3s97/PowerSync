@@ -788,13 +788,13 @@
       },
       "sigenergy_dc_curtailment": {
         "title": "DC solar curtailment",
-        "description": "When enabled, PowerSync limits DC solar production when export earnings drop below the configured threshold via Modbus. For AC-coupled inverters, configure curtailment separately.",
+        "description": "When enabled for Sigenergy, PowerSync limits DC solar production via Modbus independently of battery export curtailment. In Monitoring Mode, also enable the explicit curtailment-control permission.",
         "data": {
           "sigenergy_dc_curtailment_enabled": "Enable DC solar curtailment",
           "sigenergy_export_limit_kw": "Grid export limit (kW)"
         },
         "data_description": {
-          "sigenergy_dc_curtailment_enabled": "Reduce DC solar output when export earnings drop below the configured threshold. Requires Modbus write access to the Sigenergy system.",
+          "sigenergy_dc_curtailment_enabled": "Reduce DC solar output when export earnings drop below the configured threshold. This is independent of battery export curtailment and requires Modbus write access; Monitoring Mode also requires curtailment-control permission.",
           "sigenergy_export_limit_kw": "Your DNSP grid export limit in kW. Leave blank to auto-detect from inverter registers. Prevents PowerSync from ever exceeding your grid connection allowance."
         },
         "submit": "Next"
@@ -878,7 +878,7 @@
           "amber_site_id": "If you have multiple Amber NMIs, select the one associated with this Powerwall.",
           "auto_sync_enabled": "When enabled, PowerSync uploads a new TOU tariff schedule to your battery every 5 minutes based on current Amber prices.",
           "amber_forecast_type": "Predicted is balanced. Low assumes cheaper prices (more aggressive charging). High assumes expensive prices (more conservative).",
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle; it must be enabled for curtailment to work."
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in."
         },
         "submit": "Finish"
       },
@@ -934,7 +934,7 @@
           "ac_inverter_curtailment_enabled": "Enable separate AC-coupled inverter shutdown"
         },
         "data_description": {
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle; it must be enabled for curtailment to work.",
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in.",
           "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold. Do not enable this for the hybrid battery inverter already configured as the battery system."
         },
         "submit": "Next"
@@ -1031,6 +1031,9 @@
           "alphaess_export_limit_kw": "Export limit",
           "alphaess_dc_curtailment_enabled": "Enable DC curtailment"
         },
+        "data_description": {
+          "alphaess_dc_curtailment_enabled": "Reduce DC solar output independently of battery export curtailment. Requires local Modbus control; Monitoring Mode also requires curtailment-control permission."
+        },
         "submit": "Next"
       },
       "alphaess_cloud": {
@@ -1060,7 +1063,7 @@
           "solaredge_slave_id": "Default is 1. Only change if the inverter uses another Modbus unit ID.",
           "solaredge_rated_power_w": "Rated AC output in watts. Used to convert load-following requests into SolarEdge's 0-100% active power limit.",
           "solaredge_entity_prefix": "Optional. Used to match SolarEdge HA telemetry, storage-control, and active-power-limit entities when more than one naming group exists.",
-          "solaredge_dc_curtailment_enabled": "When enabled, PowerSync sets SolarEdge active power to 0% during uneconomic export periods and restores it to 100% when export recovers."
+          "solaredge_dc_curtailment_enabled": "When enabled, PowerSync sets SolarEdge active power to 0% during uneconomic export periods and restores it to 100% when export recovers, independently of battery export curtailment. Monitoring Mode also requires curtailment-control permission."
         },
         "submit": "Connect"
       },
@@ -1081,7 +1084,7 @@
           "solaredge_slave_id": "Default is 1. Only change if the inverter uses another Modbus unit ID.",
           "solaredge_rated_power_w": "Rated AC output in watts. Used to convert load-following requests into SolarEdge's 0-100% active power limit.",
           "solaredge_entity_prefix": "Optional. Used when direct Modbus is unavailable and a SolarEdge Modbus HA integration exposes entities such as number.solaredge_active_power_limit.",
-          "solaredge_dc_curtailment_enabled": "When enabled, PowerSync sets SolarEdge active power to 0% during uneconomic export periods and restores it to 100% when export recovers."
+          "solaredge_dc_curtailment_enabled": "When enabled, PowerSync sets SolarEdge active power to 0% during uneconomic export periods and restores it to 100% when export recovers, independently of battery export curtailment. Monitoring Mode also requires curtailment-control permission."
         },
         "submit": "Connect"
       }
@@ -2046,7 +2049,7 @@
           "update_amber_token": "Paste a new Amber API token to rotate it. Leave blank to keep your current token.",
           "auto_sync_enabled": "When enabled, PowerSync uploads a new TOU tariff schedule to your battery every 5 minutes based on current Amber prices.",
           "amber_forecast_type": "Predicted is balanced. Low assumes cheaper prices (more aggressive charging). High assumes expensive prices (more conservative).",
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle; it must be enabled for curtailment to work.",
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in.",
           "spike_protection_enabled": "When Amber detects a price spike, artificially inflate buy prices to prevent your battery from charging from grid.",
           "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold. Do not enable this for the hybrid battery inverter already configured as the battery system.",
           "forecast_discrepancy_alert": "Send a mobile notification when Amber predicted and High (higher-price) forecasts diverge significantly. Indicates the forecast spread is large and conservative scheduling may be preferable.",
@@ -2401,7 +2404,7 @@
           "openweathermap_api_key": "OpenWeatherMap API key"
         },
         "data_description": {
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This is the main toggle; it must be enabled for curtailment to work.",
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in.",
           "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold. Do not enable this for the hybrid battery inverter already configured as the battery system.",
           "curtailment_export_threshold_cents": "Curtail when export earnings are below this value. Set 0 to curtail only at negative export earnings. A 0.2c/kWh release deadband prevents rapid switching.",
           "curtailment_control_in_monitoring_mode": "When explicitly enabled, automatic curtail and restore commands may run while Monitoring Mode continues to block every unrelated battery, EV, and inverter dispatch command. Curtailment can change solar output or inverter export settings.",

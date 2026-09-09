@@ -17,6 +17,7 @@ SENSOR_PATH = (
     / "sensor.py"
 )
 INIT_PATH = SENSOR_PATH.parent / "__init__.py"
+CURTAILMENT_CONFIG_PATH = SENSOR_PATH.parent / "curtailment_config.py"
 
 
 def _load_status_helper():
@@ -55,6 +56,30 @@ def _status(**overrides):
     }
     values.update(overrides)
     return _load_status_helper()(**values)
+
+
+def _load_effective_configuration_helper():
+    tree = ast.parse(CURTAILMENT_CONFIG_PATH.read_text())
+    helper = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "get_effective_solar_curtailment_configuration"
+    )
+    namespace = {
+        "Any": Any,
+        "BATTERY_SYSTEM_SIGENERGY": "sigenergy",
+        "BATTERY_SYSTEM_ALPHAESS": "alphaess",
+        "BATTERY_SYSTEM_SOLAREDGE": "solaredge",
+        "CONF_BATTERY_CURTAILMENT_ENABLED": "battery_curtailment_enabled",
+        "CONF_BATTERY_SYSTEM": "battery_system",
+        "CONF_SIGENERGY_DC_CURTAILMENT_ENABLED": "sigenergy_dc_curtailment_enabled",
+        "CONF_ALPHAESS_DC_CURTAILMENT_ENABLED": "alphaess_dc_curtailment_enabled",
+        "CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED": "solaredge_dc_curtailment_enabled",
+    }
+    module = ast.fix_missing_locations(ast.Module(body=[helper], type_ignores=[]))
+    exec(compile(module, str(CURTAILMENT_CONFIG_PATH), "exec"), namespace)
+    return namespace[helper.name]
 
 
 def test_reported_material_export_is_pending_not_active():
@@ -100,6 +125,53 @@ def test_force_dispatch_ownership_cannot_report_curtailment_active():
 
 def test_disabled_curtailment_is_normal_even_at_negative_price():
     assert _status(curtailment_enabled=False) == ("Normal", None, False)
+
+
+def test_dc_only_curtailment_requires_the_selected_brand_and_its_opt_in():
+    effective_configuration = _load_effective_configuration_helper()
+
+    for battery_system, dc_key in (
+        ("sigenergy", "sigenergy_dc_curtailment_enabled"),
+        ("alphaess", "alphaess_dc_curtailment_enabled"),
+        ("solaredge", "solaredge_dc_curtailment_enabled"),
+    ):
+        entry = type("Entry", (), {"options": {"battery_system": battery_system, dc_key: True}, "data": {}})()
+        assert effective_configuration(entry) == (False, True)
+
+    assert effective_configuration(
+        type("Entry", (), {"options": {"sigenergy_dc_curtailment_enabled": True}, "data": {}})()
+    ) == (False, False)
+    assert effective_configuration(
+        type("Entry", (), {"options": {"battery_system": "alphaess", "sigenergy_dc_curtailment_enabled": True}, "data": {}})()
+    ) == (False, False)
+
+
+def test_every_automatic_entry_point_uses_the_effective_configuration():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    setup = next(
+        node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "async_setup_entry"
+    )
+    names = {
+        "handle_solar_curtailment_check",
+        "handle_solar_curtailment_with_websocket_data",
+        "websocket_sync_callback",
+        "trigger_curtailment_check",
+        "auto_curtailment_check",
+        "_startup_curtailment_check",
+    }
+    for node in ast.walk(setup):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+            segment = ast.get_source_segment(source, node)
+            assert segment is not None
+            if node.name == "websocket_sync_callback":
+                assert "trigger_curtailment_check" in segment
+            else:
+                assert "_effective_solar_curtailment_enabled()" in segment
+
+    sensor_source = SENSOR_PATH.read_text()
+    assert "any(get_effective_solar_curtailment_configuration(entry))" in sensor_source
+    assert "return any(get_effective_solar_curtailment_configuration(self._entry))" in sensor_source
 
 
 def test_sensor_and_dashboard_expose_pending_as_distinct_state():

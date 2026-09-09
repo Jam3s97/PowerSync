@@ -6,7 +6,15 @@ import math
 from typing import Any
 
 from .const import (
+    BATTERY_SYSTEM_ALPHAESS,
+    BATTERY_SYSTEM_SIGENERGY,
+    BATTERY_SYSTEM_SOLAREDGE,
+    CONF_ALPHAESS_DC_CURTAILMENT_ENABLED,
+    CONF_BATTERY_CURTAILMENT_ENABLED,
+    CONF_BATTERY_SYSTEM,
     CONF_CURTAILMENT_EXPORT_THRESHOLD_CENTS,
+    CONF_SIGENERGY_DC_CURTAILMENT_ENABLED,
+    CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED,
     DEFAULT_CURTAILMENT_EXPORT_THRESHOLD_CENTS,
 )
 from .tariff_utils import with_hysteresis
@@ -15,6 +23,30 @@ from .tariff_utils import with_hysteresis
 CURTAILMENT_HYSTERESIS_CENTS = 0.2
 MIN_CURTAILMENT_EXPORT_THRESHOLD_CENTS = -100.0
 MAX_CURTAILMENT_EXPORT_THRESHOLD_CENTS = 200.0
+
+
+def get_effective_solar_curtailment_configuration(entry: Any) -> tuple[bool, bool]:
+    """Return ``(battery_export, direct_dc)`` curtailment permissions.
+
+    Direct DC curtailment is deliberately limited to the selected brand's
+    existing explicit opt-in.  In particular, a stale option for another
+    battery brand, or a legacy entry without an explicit battery-system
+    selection, must not turn a control path on after an upgrade.
+    """
+    options = getattr(entry, "options", {}) or {}
+    data = getattr(entry, "data", {}) or {}
+
+    def value(key: str, default: Any = False) -> Any:
+        return options.get(key, data.get(key, default))
+
+    battery_export_enabled = bool(value(CONF_BATTERY_CURTAILMENT_ENABLED))
+    direct_dc_setting = {
+        BATTERY_SYSTEM_SIGENERGY: CONF_SIGENERGY_DC_CURTAILMENT_ENABLED,
+        BATTERY_SYSTEM_ALPHAESS: CONF_ALPHAESS_DC_CURTAILMENT_ENABLED,
+        BATTERY_SYSTEM_SOLAREDGE: CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED,
+    }.get(value(CONF_BATTERY_SYSTEM))
+    direct_dc_enabled = bool(value(direct_dc_setting)) if direct_dc_setting else False
+    return battery_export_enabled, direct_dc_enabled
 
 
 def normalize_curtailment_export_threshold_cents(value: Any) -> float:

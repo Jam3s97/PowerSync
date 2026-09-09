@@ -23,6 +23,14 @@
 
 ## Supported Systems
 
+### Independent DC Solar Curtailment
+
+Battery export curtailment controls the battery/Tesla export path. Sigenergy,
+AlphaESS, and SolarEdge installations can instead enable their own DC solar
+curtailment option, which operates when battery dispatch is disabled. In
+Monitoring Mode, DC writes remain blocked unless **Allow curtailment control in
+Monitoring Mode** is explicitly enabled.
+
 ### Battery Systems
 
 | System | Connection | Control |

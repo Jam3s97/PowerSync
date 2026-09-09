@@ -795,6 +795,7 @@ def test_sigenergy_releases_zero_export_for_active_solar_surplus_ev():
         ),
         "export_earnings_are_uneconomic": lambda *_args: True,
         "_active_solar_surplus_ev_needs_inverter_headroom": lambda: _async_true(),
+        "_direct_dc_curtailment_write_allowed": lambda: True,
     }
     exec(textwrap.dedent(handler), namespace)
 

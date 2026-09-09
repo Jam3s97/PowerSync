@@ -79,7 +79,7 @@ class FakeAlphaESSController:
 
 def _load_handler(entry_data: dict, *, force_charge_active: bool = False,
                    force_discharge_active: bool = False,
-                   optimizer_force_matches=None):
+                   optimizer_force_matches=None, direct_write_allowed: bool = True):
     """Exec handle_alphaess_curtailment with fakes standing in for the
     free variables normally provided by async_setup_entry's closure."""
     entry = SimpleNamespace(
@@ -116,6 +116,7 @@ def _load_handler(entry_data: dict, *, force_charge_active: bool = False,
         "force_charge_state": {"active": force_charge_active},
         "force_discharge_state": {"active": force_discharge_active},
         "_optimizer_current_force_action_matches": _optimizer_current_force_action_matches,
+        "_direct_dc_curtailment_write_allowed": lambda: direct_write_allowed,
         "with_hysteresis": _load_with_hysteresis(),
         "export_earnings_are_uneconomic": lambda value, active, _entry: (
             _load_with_hysteresis()(
@@ -206,6 +207,17 @@ def test_alphaess_curtailment_restores_when_earnings_recover_and_idle():
     asyncio.run(handler(feedin_price=POSITIVE_EARNINGS_FEEDIN_PRICE, import_price=30.0))
 
     assert controller.restore_calls == 1
+    assert hass.data[DOMAIN][ENTRY_ID]["alphaess_curtailment_state"] == "normal"
+
+
+def test_alphaess_curtailment_rechecks_permission_before_direct_write():
+    """A Monitoring Mode/reload handoff after price evaluation blocks Modbus."""
+    entry_data, controller = _entry_data_with_controller("normal")
+    handler, hass = _load_handler(entry_data, direct_write_allowed=False)
+
+    asyncio.run(handler(feedin_price=NEGATIVE_EARNINGS_FEEDIN_PRICE, import_price=30.0))
+
+    assert controller.curtail_calls == 0
     assert hass.data[DOMAIN][ENTRY_ID]["alphaess_curtailment_state"] == "normal"
 
 
