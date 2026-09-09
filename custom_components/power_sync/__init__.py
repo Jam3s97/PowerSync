@@ -18774,10 +18774,19 @@ def _get_ev_display_coordinator(hass, entry):
         from .automations.actions import _calculate_solar_surplus
         from .solar_surplus_config import get_stored_solar_surplus_config
 
+        # ``ev_power_kw`` is a display value: it remains None whenever an
+        # active loadpoint has unavailable power so consumers cannot mistake
+        # unknown demand for a measured zero.  Surplus arithmetic instead
+        # needs the finite sum of the known loadpoints, matching the first
+        # loadpoint-status calculation above.
+        known_loadpoint_power_kw = sum(
+            max(0.0, float(loadpoint.get("current_power_kw") or 0))
+            for loadpoint in payload.get("loadpoints", [])
+        )
         site["surplus_kw"] = round(
             _calculate_solar_surplus(
                 normalized_live_status,
-                site.get("ev_power_kw", 0.0),
+                known_loadpoint_power_kw,
                 get_stored_solar_surplus_config(entry_data),
             ),
             2,

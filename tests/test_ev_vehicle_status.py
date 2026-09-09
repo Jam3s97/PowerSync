@@ -1808,6 +1808,82 @@ def test_display_snapshot_timestamp_follows_active_zero_power_observation(monkey
     assert tesla_coordinator.data["home_load_normalization_quality"] == "complete"
 
 
+def test_display_snapshot_keeps_unknown_ev_power_out_of_surplus_arithmetic(
+    monkeypatch,
+):
+    """An active unknown loadpoint must not make the canonical EV API fail."""
+    power_sync = _power_sync_module()
+    ev_load = importlib.import_module("power_sync.ev_load")
+    observed_at = datetime(2026, 9, 9, 2, 55, tzinfo=timezone.utc)
+
+    async def get_ev_load_observations(hass, entry, vehicles):
+        return [
+            ev_load.EvLoadObservation(
+                "vehicle:unknown",
+                "fleet_unknown",
+                None,
+                observed_at,
+                True,
+                ev_load.EvMeasurementKind.VEHICLE,
+            ),
+            ev_load.EvLoadObservation(
+                "vehicle:known",
+                "wall_connector",
+                2.0,
+                observed_at,
+                True,
+                ev_load.EvMeasurementKind.LOADPOINT_METER,
+            ),
+        ]
+
+    class LoadpointStatusView:
+        def __init__(self, hass, entry):
+            self._hass = hass
+
+        def _site_snapshot(self):
+            return _fake_site_snapshot(self._hass)
+
+        async def _async_build_response(self, request, observed_vehicle_sink):
+            return SimpleNamespace(
+                status=200,
+                body=(
+                    b'{"success": true, "site": {"ev_power_kw": null}, '
+                    b'"loadpoints": ['
+                    b'{"actual_charging": true, "current_power_kw": null}, '
+                    b'{"actual_charging": true, "current_power_kw": 2.0}]}'
+                ),
+            )
+
+    monkeypatch.setattr(
+        power_sync,
+        "_get_ev_load_observations",
+        get_ev_load_observations,
+    )
+    monkeypatch.setattr(power_sync, "EVLoadpointStatusView", LoadpointStatusView)
+    hass = _Hass(
+        [],
+        entry_data={
+            "tesla_coordinator": SimpleNamespace(
+                data={
+                    "solar_power": 4.9,
+                    "grid_power": -0.1,
+                    "battery_power": 0.0,
+                    "load_power": None,
+                    "battery_level": 50,
+                }
+            )
+        },
+    )
+
+    snapshot = asyncio.run(
+        power_sync._get_ev_display_coordinator(hass, _Entry()).async_refresh(force=True)
+    )
+
+    assert snapshot["site"]["ev_power_kw"] is None
+    assert snapshot["site"]["observation_quality"] == "incomplete"
+    assert snapshot["site"]["surplus_kw"] == 1.6
+
+
 def test_wall_connector_same_vehicle_edges_follow_source_timestamp():
     """Ticket #204: source time decides same-VIN stop/restart ordering."""
     power_sync = _power_sync_module()
