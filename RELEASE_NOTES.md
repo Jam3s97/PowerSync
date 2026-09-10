@@ -1,9 +1,14 @@
 <!-- release: v2.12.1269 -->
+
 ## What's Changed
 
-- Added an optional local OpenAI-compatible plan-explanation provider, including Open WebUI-compatible chat-completions endpoints, a selected model, and optional write-only bearer authentication.
-- Local endpoints are limited to private or loopback addresses, do not follow redirects, and preserve HTTPS certificate validation. HTTP is clearly identified as exposing household plan data and any bearer key on the local network.
-- Added a separately opt-in automatic explanation refresh. It remains off by default; when enabled, only materially changed committed plans queue background work with debounce, cooldown, coalescing, and one provider request at a time.
-- Generate and Refresh remain manual by default, and explanations remain descriptive-only with no effect on optimizer decisions or hardware commands.
+**Optional local OpenAI-compatible explanations**
+You can now choose a local OpenAI-compatible chat-completions service, including Open WebUI-compatible endpoints, select its model, and optionally supply a write-only bearer key. The service is opt-in and continues to use the existing descriptive-only explanation experience.
+
+**Local-network safeguards**
+Configured local endpoints are restricted to private or loopback addresses, redirects are refused, and HTTPS certificate validation remains enabled. HTTP is explicitly identified as allowing household plan data and any bearer key to travel without transport encryption on the local network.
+
+**Optional automatic refresh**
+Automatic explanation generation is separately opt-in and remains disabled by default. When enabled, only materially changed committed plans queue background work; debounce, cooldown, coalescing, and a single in-flight request bound that work. Generate and Refresh continue to be manual by default, and explanations do not affect optimizer decisions or hardware commands.
 
 Update available via HACS
