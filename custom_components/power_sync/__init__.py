@@ -32002,7 +32002,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 controller = sig_coord._controller
                 sigenergy_result = await _guarded_force_discharge_write(
                     lambda guarded_w: controller.force_discharge(
-                        power_kw=guarded_w / 1000
+                        power_kw=guarded_w / 1000,
+                        battery_discharge_kw=(
+                            requested_battery_discharge_w / 1000
+                            if requested_battery_discharge_w > 0
+                            else None
+                        ),
                     )
                 )
                 if not sigenergy_result:
@@ -32040,7 +32045,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     try:
                         sigenergy_result = await _guarded_force_discharge_write(
                             lambda guarded_w: controller.force_discharge(
-                                power_kw=guarded_w / 1000
+                                power_kw=guarded_w / 1000,
+                                battery_discharge_kw=(
+                                    requested_battery_discharge_w / 1000
+                                    if requested_battery_discharge_w > 0
+                                    else None
+                                ),
                             )
                         )
                         if not sigenergy_result:

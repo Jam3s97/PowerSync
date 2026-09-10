@@ -195,6 +195,44 @@ def test_initial_and_extension_dispatch_both_preserve_solax_total():
     )
 
 
+def test_sigenergy_optimizer_hardware_paths_forward_battery_target():
+    """Ticket #52: neither optimizer hardware path may fall back to PV-first."""
+    source = INIT.read_text()
+    tree = ast.parse(source)
+    handler = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "handle_force_discharge"
+    )
+    hardware_only = next(
+        node
+        for node in ast.walk(handler)
+        if isinstance(node, ast.If)
+        and "source" in ast.unparse(node.test)
+        and "optimizer" in ast.unparse(node.test)
+        and "extend_hardware" in ast.unparse(node.test)
+    )
+    sigenergy_calls = [
+        node
+        for node in ast.walk(hardware_only)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "force_discharge"
+        and any(keyword.arg == "power_kw" for keyword in node.keywords)
+    ]
+
+    assert len(sigenergy_calls) == 2
+    assert all(
+        any(
+            keyword.arg == "battery_discharge_kw"
+            and "requested_battery_discharge_w" in ast.unparse(keyword.value)
+            for keyword in call.keywords
+        )
+        for call in sigenergy_calls
+    )
+
+
 def test_repeated_solax_dispatch_keeps_total_nonzero():
     method = _load_guard_method()
     battery = _Battery()
