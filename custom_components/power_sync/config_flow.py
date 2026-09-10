@@ -59,6 +59,9 @@ from .flow_power import validate_flow_power_plan_selection
 from .optimization.ai_summary import AISummaryError, apply_ai_summary_settings
 from .const import (
     DOMAIN,
+    CONF_DISPLAY_CURRENCY,
+    DISPLAY_CURRENCIES,
+    DISPLAY_CURRENCY_AUTOMATIC,
     CONF_AMBER_API_TOKEN,
     CONF_AMBER_SITE_ID,
     CONF_AMBER_FORECAST_TYPE,
@@ -8343,7 +8346,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         battery_system = self._effective_battery_system()
 
         # Build menu options based on current config
-        menu_options = ["pricing", "battery_system", "battery_connection_profile"]
+        menu_options = [
+            "display_currency",
+            "pricing",
+            "battery_system",
+            "battery_connection_profile",
+        ]
         current_provider = self._get_option(CONF_ELECTRICITY_PROVIDER, "amber")
         if current_provider == "globird":
             menu_options.append("provider_portal")
@@ -8390,6 +8398,50 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_menu(
             step_id="init",
             menu_options=menu_options,
+        )
+
+    async def async_step_display_currency(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Choose the non-converting display currency used by clients."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            selected = user_input.get(CONF_DISPLAY_CURRENCY)
+            if selected not in DISPLAY_CURRENCIES:
+                errors[CONF_DISPLAY_CURRENCY] = "invalid_display_currency"
+            else:
+                # Keep this preference in options only: it must not alter a
+                # provider's tariff input, stored prices, or optimizer units.
+                return self._save_connection_and_reload(
+                    {}, {CONF_DISPLAY_CURRENCY: selected}
+                )
+
+        current = self._get_option(
+            CONF_DISPLAY_CURRENCY, DISPLAY_CURRENCY_AUTOMATIC
+        )
+        if current not in DISPLAY_CURRENCIES:
+            current = DISPLAY_CURRENCY_AUTOMATIC
+        return self.async_show_form(
+            step_id="display_currency",
+            data_schema=vol.Schema({
+                vol.Required(CONF_DISPLAY_CURRENCY, default=current): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(
+                                value=DISPLAY_CURRENCY_AUTOMATIC,
+                                label="Automatic (provider / Home Assistant)",
+                            ),
+                            *[
+                                SelectOptionDict(value=currency, label=currency)
+                                for currency in DISPLAY_CURRENCIES
+                                if currency != DISPLAY_CURRENCY_AUTOMATIC
+                            ],
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }),
+            errors=errors,
         )
 
     async def async_step_advanced(

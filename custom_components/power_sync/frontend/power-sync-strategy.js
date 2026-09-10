@@ -2633,10 +2633,10 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     }
     const breakdown = data.daily_cost_breakdown || {};
     if (Number.isFinite(Number(breakdown.predicted_remaining))) {
-      chips.push(['Remaining', this._formatMoney(Number(breakdown.predicted_remaining), priceMeta.currency)]);
+      chips.push(['Remaining', this._formatMoney(Number(breakdown.predicted_remaining), priceMeta.displayCurrency)]);
     }
     if (Number.isFinite(Number(data.predicted_savings))) {
-      chips.push(['Savings', this._formatMoney(Number(data.predicted_savings), priceMeta.currency)]);
+      chips.push(['Savings', this._formatMoney(Number(data.predicted_savings), priceMeta.displayCurrency)]);
     }
     const warnings = Array.isArray(data.warnings) ? data.warnings : [];
     if (warnings.length) {
@@ -3061,7 +3061,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     if (!stats || !Number.isFinite(stats.energyKwh) || stats.energyKwh <= 0) return '';
     const valueLabel = action === 'charge' ? 'Est. cost' : 'Est. earnings';
     const money = Number.isFinite(stats.value)
-      ? `<span class="window-impact-money">${this._escHtml(`${valueLabel} ${this._formatMoney(stats.value, priceMeta.currency)}`)}</span>`
+      ? `<span class="window-impact-money">${this._escHtml(`${valueLabel} ${this._formatMoney(stats.value, priceMeta.displayCurrency)}`)}</span>`
       : '';
     return `
       <div class="window-impact">
@@ -3449,10 +3449,13 @@ class PowerSyncOptimizationPlan extends HTMLElement {
   }
 
   _formatMoney(value, currency) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return '--';
     try {
-      return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'AUD' }).format(value);
+      if (typeof Intl === 'undefined' || !Intl.NumberFormat) throw new Error('Intl unavailable');
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'AUD' }).format(amount);
     } catch (_) {
-      return `${currency || 'AUD'} ${value.toFixed(2)}`;
+      return `${currency || 'AUD'} ${amount.toFixed(2)}`;
     }
   }
 
@@ -7042,6 +7045,7 @@ function _minorCurrencyUnit(currency) {
   const code = (currency || 'AUD').toUpperCase();
   if (code === 'GBP') return 'p';
   if (code === 'EUR') return 'ct';
+  if (code === 'SEK') return 'öre';
   return 'c';
 }
 
@@ -7053,8 +7057,12 @@ function _currencyFromUnit(unit) {
 function _priceMeta(hass, entityId) {
   const attrs = hass?.states?.[entityId]?.attributes || {};
   const currency = (attrs.currency || _currencyFromUnit(attrs.unit_of_measurement) || _hassCurrency(hass)).toUpperCase();
+  const requestedDisplayCurrency = String(attrs.display_currency || currency).toUpperCase();
+  // Backend values are never converted. A mismatched label must remain native.
+  const displayCurrency = requestedDisplayCurrency === currency ? requestedDisplayCurrency : currency;
   return {
     currency,
+    displayCurrency,
     priceUnit: attrs.price_unit || `${currency}/kWh`,
     minorPriceUnit: attrs.minor_price_unit || `${_minorCurrencyUnit(currency)}/kWh`,
     minorUnit: _minorCurrencyUnit(currency),

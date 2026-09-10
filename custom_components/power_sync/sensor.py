@@ -240,11 +240,11 @@ from .coordinator import (
 )
 from .currency import (
     currency_for_entry,
-    currency_metadata,
     major_price_unit,
     minor_price_unit,
     money_unit,
     normalize_currency,
+    presentation_currency_metadata_for_entry,
 )
 from .flow_power_pricing import (
     FlowPowerPricingContext,
@@ -587,7 +587,12 @@ def _entity_currency_attrs(
         or getattr(entity, "_attr_currency_attrs", False)
     )
     if kind and include:
-        base.update(currency_metadata(_entity_currency(entity, tariff_data)))
+        base.update(
+            presentation_currency_metadata_for_entry(
+                getattr(entity, "_entry", None),
+                _entity_currency(entity, tariff_data),
+            )
+        )
     return base
 
 
@@ -4836,7 +4841,10 @@ class TariffScheduleSensor(SensorEntity):
 
         return {
             **self._schedule_cache,
-            **currency_metadata(self._tariff_currency(tariff_data)),
+            **presentation_currency_metadata_for_entry(
+                self._entry,
+                self._tariff_currency(tariff_data),
+            ),
             "current_period": current_period,
             "buy_price": round(buy_price_cents, 2),
             "sell_price": round(sell_price_cents, 2),

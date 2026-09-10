@@ -69,6 +69,7 @@ def test_generated_tariff_payload_allows_explicit_currency_override():
     )
 
     assert tariff["currency"] == "NZD"
+    assert tariff["energy_charges"]["Summer"]["rates"] == prices
 
 
 def test_custom_tariff_converter_defaults_missing_currency():
@@ -176,7 +177,7 @@ summary._hass = {
   states: { 'sensor.price': { attributes: { minor_price_unit: 'c/kWh' } } },
 };
 const values = [-123.456, -100, -12.345, -10, -9.999, 0, 9.999, 10, 12.345, 100, 123.456];
-const units = ['c/kWh', 'p/kWh', 'ct/kWh'];
+const units = ['c/kWh', 'p/kWh', 'ct/kWh', 'öre/kWh'];
 console.log(JSON.stringify({
   chart: units.map((unit) => values.map((value) => chart._formatValue(value, unit, true, true))),
   plan: units.map((unit) => values.map((value) => plan._formatMinorPrice(value, unit.split('/')[0]))),
@@ -199,7 +200,7 @@ console.log(JSON.stringify({
     )
     formatted = json.loads(result.stdout)
     values = (-123.456, -100, -12.345, -10, -9.999, 0, 9.999, 10, 12.345, 100, 123.456)
-    units = ("c/kWh", "p/kWh", "ct/kWh")
+    units = ("c/kWh", "p/kWh", "ct/kWh", "öre/kWh")
     assert formatted["chart"] == [
         [f"{value:.2f}{unit}" for value in values]
         for unit in units
@@ -216,6 +217,34 @@ console.log(JSON.stringify({
         [item["unit"] for item in readings]
         for readings in formatted["summary"]
     ] == [[unit] * len(values) for unit in units]
+
+
+def test_dashboard_money_formatter_uses_native_sek_fallback_without_intl():
+    """Locale/ICU failure must not relabel a native SEK amount as another unit."""
+    if shutil.which("node") is None:
+        return
+
+    script = r'''
+const fs = require('fs');
+const vm = require('vm');
+const registry = {};
+class HTMLElement { attachShadow() { return { innerHTML: '', querySelector() { return null; } }; } }
+const context = {
+  HTMLElement,
+  Intl: undefined,
+  customElements: { get(name) { return registry[name]; }, define(name, klass) { registry[name] = klass; } },
+  window: {}, ResizeObserver: class {}, requestAnimationFrame() {},
+};
+context.globalThis = context;
+vm.runInNewContext(fs.readFileSync('custom_components/power_sync/frontend/power-sync-strategy.js', 'utf8'), context);
+const plan = new registry['power-sync-optimization-plan']();
+console.log(plan._formatMoney(12.5, 'SEK'));
+'''
+    result = subprocess.run(
+        ["node"], input=script, text=True, capture_output=True, cwd=ROOT, check=True
+    )
+
+    assert result.stdout.strip() == "SEK 12.50"
 
 
 def test_dashboard_history_chart_requests_full_update_history():

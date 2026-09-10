@@ -1121,6 +1121,7 @@
     },
     "error": {
       "invalid_flow_power_plan": "Choose a Flow Power plan and a region supported by that plan.",
+      "invalid_display_currency": "Select Automatic, AUD, EUR, GBP, NZD, or SEK.",
       "season_required": "Add at least one tariff season.",
       "season_name_invalid": "Each tariff season needs a unique, non-empty name.",
       "season_month_invalid": "Choose valid start and end months for the tariff season.",
@@ -1260,6 +1261,7 @@
         "title": "PowerSync settings",
         "description": "Settings are grouped for your selected battery, provider, and EV setup. Optional specialist features are under Advanced settings.",
         "menu_options": {
+          "display_currency": "Display currency",
           "pricing": "Electricity pricing & provider",
           "battery_system": "Battery / control method",
           "battery_connection_profile": "Battery connection method & sensors",
@@ -1283,6 +1285,17 @@
           "solax_battery_options": "Solax connection",
           "advanced": "Advanced settings"
         }
+      },
+      "display_currency": {
+        "title": "Display currency",
+        "description": "Choose how PowerSync labels user-facing monetary amounts. Automatic keeps current provider and Home Assistant behavior. PowerSync never converts provider prices, tariff data, history, billing, or optimizer calculations; a different source currency safely remains in its native unit.",
+        "data": {
+          "display_currency": "Display currency"
+        },
+        "data_description": {
+          "display_currency": "Select Automatic, AUD, EUR, GBP, NZD, or SEK. A selected currency is shown only when the authoritative source already uses it."
+        },
+        "submit": "Save"
       },
       "advanced": {
         "title": "Advanced settings",

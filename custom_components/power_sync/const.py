@@ -17,7 +17,7 @@ except (FileNotFoundError, json.JSONDecodeError):
     POWER_SYNC_VERSION = "0.0.0"
 
 # Dashboard JS version — bump this to cache-bust the strategy JS independently of the app version
-DASHBOARD_JS_VERSION = "49"
+DASHBOARD_JS_VERSION = "50"
 
 # User-Agent for API identification
 POWER_SYNC_USER_AGENT = f"PowerSync/{POWER_SYNC_VERSION} HomeAssistant"
@@ -28,6 +28,16 @@ TESLA_CAPABILITY_WAIT_SECONDS = 30.0
 AMBER_WEBSOCKET_START_TIMEOUT_SECONDS = 15.0
 
 # Configuration keys
+CONF_DISPLAY_CURRENCY = "display_currency"
+DISPLAY_CURRENCY_AUTOMATIC = "automatic"
+DISPLAY_CURRENCIES = (
+    DISPLAY_CURRENCY_AUTOMATIC,
+    "AUD",
+    "EUR",
+    "GBP",
+    "NZD",
+    "SEK",
+)
 CONF_AMBER_API_TOKEN = "amber_api_token"
 CONF_AMBER_SITE_ID = "amber_site_id"
 CONF_TESLEMETRY_API_TOKEN = "teslemetry_api_token"

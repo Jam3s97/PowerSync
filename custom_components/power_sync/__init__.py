@@ -921,6 +921,7 @@ from .currency import (
     currency_for_entry,
     currency_metadata,
     normalize_currency,
+    presentation_currency_metadata_for_entry,
 )
 from .inverters import get_inverter_controller
 from .curtailment_config import (
@@ -11052,7 +11053,9 @@ class ConfigView(HomeAssistantView):
                 "success": True,
                 "battery_system": battery_system,
                 "electricity_provider": electricity_provider,
-                **currency_metadata(currency_for_entry(entry, self._hass)),
+                **presentation_currency_metadata_for_entry(
+                    entry, currency_for_entry(entry, self._hass)
+                ),
                 "ev_provider": ev_provider,  # Tesla (fleet_api/tesla_ble/both) or None for OCPP-only
                 "features": features,
                 "automation_trigger_capabilities": {
@@ -11687,7 +11690,9 @@ class ProviderConfigView(HomeAssistantView):
                 "success": True,
                 "electricity_provider": electricity_provider,
                 "battery_system": battery_system,
-                **currency_metadata(currency_for_entry(entry, self._hass)),
+                **presentation_currency_metadata_for_entry(
+                    entry, currency_for_entry(entry, self._hass)
+                ),
                 "config": config,
             }
 
@@ -12602,7 +12607,10 @@ async def fetch_tesla_tariff_schedule(hass: HomeAssistant, entry: ConfigEntry) -
             "seasons": seasons,  # Include season definitions
             "utility": tariff.get("utility", "Unknown"),
             "plan_name": tariff.get("name", "Unknown"),
-            **currency_metadata(tariff.get("currency") or currency_for_entry(entry, hass)),
+            **presentation_currency_metadata_for_entry(
+                entry,
+                tariff.get("currency") or currency_for_entry(entry, hass),
+            ),
             "last_sync": now.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
@@ -25403,7 +25411,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     entry_data["tariff_schedule"] = {
                         "buy_prices": canonical_buy_rates,
                         "sell_prices": canonical_sell_rates,
-                        **currency_metadata(canonical_tariff.get("currency")),
+                        **presentation_currency_metadata_for_entry(
+                            entry, canonical_tariff.get("currency")
+                        ),
                         **rolling_metadata,
                         "last_sync": dt_util.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
@@ -26425,7 +26435,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry_data["tariff_schedule"] = {
                     "buy_prices": buy_prices,
                     "sell_prices": sell_prices,
-                    **currency_metadata(tariff.get("currency")),
+                    **presentation_currency_metadata_for_entry(
+                        entry, tariff.get("currency")
+                    ),
                     **_flow_power_price_source_metadata(),
                     **rolling_metadata,
                     "last_sync": dt_util.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -26482,7 +26494,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry_data["tariff_schedule"] = {
                     "buy_prices": buy_prices,
                     "sell_prices": sell_prices,
-                    **currency_metadata(tariff.get("currency")),
+                    **presentation_currency_metadata_for_entry(
+                        entry, tariff.get("currency")
+                    ),
                     **_flow_power_price_source_metadata(),
                     **rolling_metadata,
                     "last_sync": dt_util.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -26754,7 +26768,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry_data["tariff_schedule"] = {
                 "buy_prices": buy_prices,
                 "sell_prices": sell_prices,
-                **currency_metadata(tariff.get("currency")),
+                **presentation_currency_metadata_for_entry(
+                    entry, tariff.get("currency")
+                ),
                 **_flow_power_price_source_metadata(),
                 **rolling_metadata,
                 "last_sync": dt_util.now().strftime("%Y-%m-%d %H:%M:%S"),

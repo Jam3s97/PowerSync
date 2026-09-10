@@ -180,6 +180,46 @@ def test_gbp_price_sensor_uses_rate_unit_without_monetary_device_class():
     assert entity.extra_state_attributes["minor_price_unit"] == "p/kWh"
 
 
+def test_requested_sek_on_gbp_source_keeps_native_sensor_value_and_unit():
+    sensor = _sensor_module()
+    desc = next(d for d in sensor.PRICE_SENSORS if d.key == "current_import_price")
+    entry = _entry("octopus")
+    entry.options["display_currency"] = "SEK"
+    entity = sensor.AmberPriceSensor(
+        SimpleNamespace(data={"current": [{"channelType": "general", "perKwh": 25.0}]}),
+        desc,
+        entry,
+    )
+    entity.hass = _hass("SEK")
+
+    assert entity.native_value == 0.25
+    assert entity.native_unit_of_measurement == "GBP/kWh"
+    assert entity.extra_state_attributes["currency"] == "GBP"
+    assert entity.extra_state_attributes["minor_price_unit"] == "p/kWh"
+    assert entity.extra_state_attributes["display_currency"] == "GBP"
+    assert entity.extra_state_attributes["display_currency_fallback"] is True
+
+
+def test_matching_sek_source_publishes_ore_presentation_metadata():
+    sensor = _sensor_module()
+    desc = next(d for d in sensor.PRICE_SENSORS if d.key == "current_import_price")
+    entry = _entry("other")
+    entry.options["display_currency"] = "SEK"
+    entity = sensor.AmberPriceSensor(
+        SimpleNamespace(data={"current": [{"channelType": "general", "perKwh": 25.0}]}),
+        desc,
+        entry,
+    )
+    entity.hass = _hass("SEK")
+
+    assert entity.native_value == 0.25
+    assert entity.native_unit_of_measurement == "SEK/kWh"
+    assert entity.extra_state_attributes["currency"] == "SEK"
+    assert entity.extra_state_attributes["minor_price_unit"] == "öre/kWh"
+    assert entity.extra_state_attributes["display_currency"] == "SEK"
+    assert entity.extra_state_attributes["display_currency_fallback"] is False
+
+
 def test_aud_monetary_total_keeps_monetary_device_class_and_value():
     sensor = _sensor_module()
     desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "daily_import_cost")

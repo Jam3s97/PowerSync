@@ -3,6 +3,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from .const import (
+    CONF_DISPLAY_CURRENCY,
+    DISPLAY_CURRENCIES,
+    DISPLAY_CURRENCY_AUTOMATIC,
+)
+
 DEFAULT_CURRENCY = "AUD"
 CONF_ELECTRICITY_PROVIDER = "electricity_provider"
 
@@ -65,6 +71,29 @@ def currency_for_entry(entry: Any, hass: Any | None = None) -> str:
     return currency_for_provider(provider, hass)
 
 
+def display_currency_for_entry(entry: Any) -> str | None:
+    """Return a valid explicit display preference, or None for Automatic.
+
+    This value is deliberately only a presentation preference.  It never
+    changes source/provider currency or causes an exchange-rate conversion.
+    """
+    options = getattr(entry, "options", None) or {}
+    data = getattr(entry, "data", None) or {}
+    raw = (
+        options.get(CONF_DISPLAY_CURRENCY)
+        if isinstance(options, dict) and CONF_DISPLAY_CURRENCY in options
+        else data.get(CONF_DISPLAY_CURRENCY)
+        if isinstance(data, dict)
+        else None
+    )
+    if not isinstance(raw, str):
+        return None
+    preference = raw.strip().upper()
+    if raw.strip().lower() == DISPLAY_CURRENCY_AUTOMATIC:
+        return None
+    return preference if preference in DISPLAY_CURRENCIES else None
+
+
 def money_unit(currency: str | None) -> str:
     """Return the Home Assistant unit for pure monetary sensors."""
     return normalize_currency(currency)
@@ -100,6 +129,41 @@ def currency_metadata(currency: str | None) -> dict[str, str]:
         "price_unit": major_price_unit(code),
         "minor_price_unit": minor_price_unit(code),
     }
+
+
+def presentation_currency_metadata(
+    source_currency: str | None,
+    requested_display_currency: str | None = None,
+) -> dict[str, str | bool]:
+    """Return source metadata plus a fail-closed display preference result.
+
+    Currency conversion is intentionally unsupported.  A selected display
+    currency only becomes effective when it already equals the authoritative
+    source currency; otherwise clients must keep the source number and unit.
+    """
+    source = normalize_currency(source_currency)
+    requested = normalize_currency(requested_display_currency, "")
+    if requested not in DISPLAY_CURRENCIES:
+        requested = ""
+    fallback = bool(requested and requested != source)
+    return {
+        **currency_metadata(source),
+        "source_currency": source,
+        "display_currency": source,
+        "requested_display_currency": requested or DISPLAY_CURRENCY_AUTOMATIC,
+        "display_currency_fallback": fallback,
+    }
+
+
+def presentation_currency_metadata_for_entry(
+    entry: Any,
+    source_currency: str | None,
+) -> dict[str, str | bool]:
+    """Return fail-closed currency presentation metadata for a config entry."""
+    return presentation_currency_metadata(
+        source_currency,
+        display_currency_for_entry(entry),
+    )
 
 
 def selector_unit_for_provider(
