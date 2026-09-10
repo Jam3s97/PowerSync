@@ -237,6 +237,37 @@ def test_force_discharge_uses_pv_first_mode_when_solar_can_cover_target(sigenerg
     ]
 
 
+def test_optimizer_force_discharge_preserves_battery_target_and_pcc_ceiling(sigenergy_module):
+    """Ticket #52: PV must not satisfy a battery-export request by itself."""
+    controller = sigenergy_module.SigenergyController(host="127.0.0.1")
+    _stub_force_discharge_reads(controller)
+    writes: list[tuple[int, list[int]]] = []
+
+    async def connect():
+        return True
+
+    async def write(address, values, slave_id=None):
+        writes.append((address, list(values)))
+        return True
+
+    controller.connect = connect
+    controller._write_holding_registers = write
+
+    assert asyncio.run(
+        controller.force_discharge(
+            power_kw=10.0,
+            battery_discharge_kw=5.59,
+        )
+    )
+
+    assert writes == [
+        (controller.REG_GRID_EXPORT_LIMIT, controller._from_unsigned32(10000)),
+        (controller.REG_ESS_MAX_DISCHARGE_LIMIT, controller._from_unsigned32(5590)),
+        (controller.REG_REMOTE_EMS_ENABLE, [1]),
+        (controller.REG_REMOTE_EMS_CONTROL_MODE, [controller.REMOTE_EMS_MODE_DISCHARGE_ESS]),
+    ]
+
+
 def test_force_discharge_caps_ess_without_reducing_grid_export_ceiling(sigenergy_module):
     controller = sigenergy_module.SigenergyController(
         host="127.0.0.1",

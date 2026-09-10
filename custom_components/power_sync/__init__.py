@@ -32341,7 +32341,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 power_kw = power_w / 1000
                 result = await _guarded_force_discharge_write(
                     lambda guarded_w: controller.force_discharge(
-                        power_kw=guarded_w / 1000
+                        power_kw=guarded_w / 1000,
+                        battery_discharge_kw=(
+                            requested_battery_discharge_w / 1000
+                            if requested_battery_discharge_w > 0
+                            else None
+                        ),
                     )
                 )
                 await controller.disconnect()

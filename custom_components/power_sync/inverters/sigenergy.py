@@ -1358,7 +1358,12 @@ class SigenergyController(InverterController):
                 success = False
         return success
 
-    async def force_discharge(self, power_kw: float = 10.0) -> bool:
+    async def force_discharge(
+        self,
+        power_kw: float = 10.0,
+        *,
+        battery_discharge_kw: float | None = None,
+    ) -> bool:
         """Force battery to discharge to grid/load.
 
         Enables Remote EMS mode, sets a documented discharge mode and ESS
@@ -1367,7 +1372,10 @@ class SigenergyController(InverterController):
         permits that PCS target only in control mode 0, not discharge modes 5/6.
 
         Args:
-            power_kw: Target grid export power in kW (default: 10.0)
+            power_kw: Grid-export ceiling in kW (default: 10.0)
+            battery_discharge_kw: Explicit total battery-discharge target in kW
+                for an optimizer command.  When omitted, preserve the legacy
+                whole-site export-target behaviour used by manual commands.
 
         Returns:
             True if all commands successful
@@ -1425,6 +1433,22 @@ class SigenergyController(InverterController):
                 )
                 return False
 
+            # An optimizer export action carries a battery-origin target and a
+            # separate PCC ceiling.  Do not let the PV-first mode satisfy that
+            # request with solar alone: it can preserve PV while leaving the
+            # requested battery export at zero.  Manual/automation commands do
+            # not have that extra contract, so retain their least-invasive
+            # whole-site target behaviour.
+            requested_battery_kw: float | None = None
+            if battery_discharge_kw is not None:
+                try:
+                    requested_battery_kw = max(0.0, float(battery_discharge_kw))
+                except (TypeError, ValueError):
+                    _LOGGER.warning(
+                        "Ignoring invalid Sigenergy battery discharge target: %r",
+                        battery_discharge_kw,
+                    )
+
             # The two Sigenergy discharge modes behave differently across sites:
             # PV-first preserves solar but may not pull from the battery; ESS-first
             # pulls from storage but can suppress PV. Pick the least invasive mode
@@ -1432,35 +1456,46 @@ class SigenergyController(InverterController):
             mode = self.REMOTE_EMS_MODE_DISCHARGE_PV
             mode_name = "DISCHARGE_PV"
             attrs: dict = {}
-            try:
-                state = await self.get_status()
-                attrs = getattr(state, "attributes", {}) or {}
-                solar_known = (
-                    "pv_power_kw" in attrs
-                    or "third_party_pv_power_kw" in attrs
+            if requested_battery_kw is not None and requested_battery_kw > 0:
+                mode = self.REMOTE_EMS_MODE_DISCHARGE_ESS
+                mode_name = "DISCHARGE_ESS"
+                _LOGGER.info(
+                    "Sigenergy optimizer force discharge selected: %s "
+                    "(battery %.2f kW, PCC ceiling %.2f kW)",
+                    mode_name,
+                    requested_battery_kw,
+                    effective_kw,
                 )
-                if solar_known:
-                    solar_kw = max(0.0, float(attrs.get("pv_power_kw", 0) or 0))
-                    solar_kw += max(
-                        0.0,
-                        float(attrs.get("third_party_pv_power_kw", 0) or 0),
+            else:
+                try:
+                    state = await self.get_status()
+                    attrs = getattr(state, "attributes", {}) or {}
+                    solar_known = (
+                        "pv_power_kw" in attrs
+                        or "third_party_pv_power_kw" in attrs
                     )
-                    if solar_kw < effective_kw * 0.8:
-                        mode = self.REMOTE_EMS_MODE_DISCHARGE_ESS
-                        mode_name = "DISCHARGE_ESS"
-                    _LOGGER.info(
-                        "Sigenergy force discharge mode selected: %s "
-                        "(solar %.2f kW, target %.2f kW)",
-                        mode_name,
-                        solar_kw,
-                        effective_kw,
+                    if solar_known:
+                        solar_kw = max(0.0, float(attrs.get("pv_power_kw", 0) or 0))
+                        solar_kw += max(
+                            0.0,
+                            float(attrs.get("third_party_pv_power_kw", 0) or 0),
+                        )
+                        if solar_kw < effective_kw * 0.8:
+                            mode = self.REMOTE_EMS_MODE_DISCHARGE_ESS
+                            mode_name = "DISCHARGE_ESS"
+                        _LOGGER.info(
+                            "Sigenergy force discharge mode selected: %s "
+                            "(solar %.2f kW, target %.2f kW)",
+                            mode_name,
+                            solar_kw,
+                            effective_kw,
+                        )
+                except Exception as e:
+                    _LOGGER.debug(
+                        "Sigenergy force discharge mode selection using default "
+                        "PV-first mode: %s",
+                        e,
                     )
-            except Exception as e:
-                _LOGGER.debug(
-                    "Sigenergy force discharge mode selection using default "
-                    "PV-first mode: %s",
-                    e,
-                )
 
             scaled_value = int(effective_kw * self.GAIN_POWER)
             ess_cap_kw = rated_discharge_kw
@@ -1476,7 +1511,11 @@ class SigenergyController(InverterController):
                     effective_kw,
                     ess_cap_kw,
                 )
-            ess_limit_kw = ess_cap_kw
+            ess_limit_kw = (
+                min(ess_cap_kw, requested_battery_kw)
+                if requested_battery_kw is not None and requested_battery_kw > 0
+                else ess_cap_kw
+            )
 
             # 1. Install the grid-export ceiling before enabling discharge mode,
             # preventing the existing ESS limit from causing a transient overshoot.
@@ -1536,7 +1575,20 @@ class SigenergyController(InverterController):
                 return False
             _LOGGER.info("Remote EMS control mode set to %s", mode_name)
 
-            _LOGGER.info(f"Sigenergy FORCE DISCHARGE active — target {effective_kw} kW, export limit {effective_kw} kW")
+            if requested_battery_kw is not None and requested_battery_kw > 0:
+                _LOGGER.info(
+                    "Sigenergy FORCE DISCHARGE active — battery target %.3f kW, "
+                    "export limit %.3f kW",
+                    requested_battery_kw,
+                    effective_kw,
+                )
+            else:
+                _LOGGER.info(
+                    "Sigenergy FORCE DISCHARGE active — target %.3f kW, "
+                    "export limit %.3f kW",
+                    effective_kw,
+                    effective_kw,
+                )
             return True
 
         except Exception as e:

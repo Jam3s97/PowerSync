@@ -172,6 +172,9 @@ class BatteryControllerWrapper:
             service_data = {"duration": duration_minutes, "power_w": power_w, "source": "optimizer"}
             if self.battery_system == "solax" and battery_discharge_w is not None:
                 service_data["battery_discharge_w"] = battery_discharge_w
+            if self.battery_system == "sigenergy":
+                if battery_discharge_w is not None:
+                    service_data["battery_discharge_w"] = battery_discharge_w
             if _extend_hardware:
                 service_data["_extend_hardware"] = True
             if _tariff_duration is not None:

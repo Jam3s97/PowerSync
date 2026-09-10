@@ -9304,6 +9304,30 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 command_w = min(command_w, float(self._config.max_grid_export_w))
         return command_w
 
+    def _sigenergy_grid_export_limit_w(self, action: Any) -> float:
+        """Return the solved PCC ceiling for a Sigenergy optimizer export.
+
+        ``ScheduleAction.power_w`` is intentionally battery-to-grid power after
+        reconciliation.  Sigenergy register 40038 is instead a whole-site PCC
+        ceiling, so recover the matching solved grid flow rather than passing
+        the battery contribution as though it were a site limit.
+        """
+        fallback_w = max(0.0, float(getattr(action, "power_w", 0.0) or 0.0))
+        result = getattr(self, "_last_optimizer_result", None)
+        schedule = getattr(result, "schedule", None)
+        actions = getattr(schedule, "actions", None) or []
+        grid_export_w = getattr(result, "grid_export_w", None) or []
+        action_timestamp = getattr(action, "timestamp", None)
+        for index, candidate in enumerate(actions):
+            if candidate is action or getattr(candidate, "timestamp", None) == action_timestamp:
+                if index < len(grid_export_w):
+                    try:
+                        return max(fallback_w, float(grid_export_w[index]) or 0.0)
+                    except (TypeError, ValueError):
+                        break
+                break
+        return fallback_w
+
     def _network_export_guard(self) -> Any | None:
         """Return the entry-scoped network guard when configured."""
         from ..const import DOMAIN
@@ -9380,10 +9404,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 writer_kwargs["battery_discharge_w"] = (
                     home_discharge_w + applied_w
                 )
-            result = await battery.force_discharge(
-                power_w=applied_w,
-                **writer_kwargs,
-            )
+            elif (
+                self.battery_system == "sigenergy"
+                and total_battery_discharge_w is not None
+            ):
+                writer_kwargs["battery_discharge_w"] = max(
+                    0.0,
+                    float(total_battery_discharge_w),
+                )
+            result = await battery.force_discharge(power_w=applied_w, **writer_kwargs)
             return result is not False
 
         if guard is None:
@@ -9530,7 +9559,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or data.get("ems_mode_name")
         )
         mode = str(mode_value or "").strip().lower()
-        if any(
+        if self.battery_system != "sigenergy" and any(
             token in mode
             for token in (
                 "sell",
@@ -9556,7 +9585,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         grid_power_w = grid_power * 1000 if abs(grid_power) < 100 else grid_power
         export_power_w = max(0.0, -grid_power_w)
 
-        observed_power_w = max(discharge_power_w, export_power_w)
+        observed_power_w = (
+            discharge_power_w
+            if self.battery_system == "sigenergy"
+            else max(discharge_power_w, export_power_w)
+        )
         minimum_expected_w = max(500.0, target_w * 0.2)
 
         if observed_power_w >= minimum_expected_w:
@@ -10460,6 +10493,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if force_type == "charge"
                         else self._export_command_power_w(force_window_action)
                     )
+                    grid_export_limit_w = (
+                        self._sigenergy_grid_export_limit_w(force_window_action)
+                        if (
+                            force_type == "discharge"
+                            and self.battery_system == "sigenergy"
+                        )
+                        else None
+                    )
                     new_expiry = dt_util.utcnow() + timedelta(minutes=extend_mins)
                     hardware_expiry = self._as_utc_datetime(_ext_state.get("hardware_expires_at"))
                     supports_force_power_refresh = (
@@ -10519,9 +10560,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             or self._force_charge_hardware_needs_refresh(force_power_w)
                         )
                     elif force_type == "discharge":
+                        refresh_target_w = (
+                            self._export_command_power_w(force_window_action)
+                            if self.battery_system == "sigenergy"
+                            else force_power_w
+                        )
                         should_refresh_hardware = (
                             should_refresh_hardware
-                            or self._force_discharge_hardware_needs_refresh(force_power_w)
+                            or self._force_discharge_hardware_needs_refresh(
+                                refresh_target_w
+                            )
                         )
                     if (
                         targetless_window_shortened
@@ -10568,14 +10616,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 allowed, applied_power_w = (
                                     await self._force_discharge_through_export_guard(
                                         battery,
-                                        force_power_w,
+                                        (
+                                            grid_export_limit_w
+                                            if grid_export_limit_w is not None
+                                            else force_power_w
+                                        ),
                                         total_battery_discharge_w=(
                                             getattr(
                                                 force_window_action,
                                                 "battery_discharge_w",
                                                 None,
                                             )
-                                            if self.battery_system == "solax"
+                                            if self.battery_system in {"sigenergy", "solax"}
                                             else None
                                         ),
                                         duration_minutes=extend_mins,
@@ -10598,7 +10650,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     self._last_executed_planned_action = action.action
                                     self._last_executed_action = "self_consumption"
                                     return
-                                force_power_w = applied_power_w
+                                force_power_w = (
+                                    self._export_command_power_w(force_window_action)
+                                    if self.battery_system == "sigenergy"
+                                    else applied_power_w
+                                )
                             _LOGGER.debug(
                                 "Optimizer: re-issued %s command for hardware refresh "
                                 "(%dmin, %.0fW)",
@@ -11324,6 +11380,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elif effective_action in ("discharge", "export"):
                 if hasattr(battery, "force_discharge"):
                     discharge_power = self._export_command_power_w(action)
+                    grid_export_limit_w = (
+                        self._sigenergy_grid_export_limit_w(action)
+                        if self.battery_system == "sigenergy"
+                        else None
+                    )
                     discharge_duration = self._force_duration_for_action_window(
                         action,
                         {"discharge", "export"},
@@ -11374,10 +11435,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     force_result, discharge_power = (
                         await self._force_discharge_through_export_guard(
                             battery,
-                            discharge_power,
+                            (
+                                grid_export_limit_w
+                                if grid_export_limit_w is not None
+                                else discharge_power
+                            ),
                             total_battery_discharge_w=(
                                 getattr(action, "battery_discharge_w", None)
-                                if self.battery_system == "solax"
+                                if self.battery_system in {"sigenergy", "solax"}
                                 else None
                             ),
                             duration_minutes=discharge_duration,
@@ -11388,7 +11453,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._set_optimizer_force_state(
                             "discharge",
                             discharge_duration,
-                            discharge_power,
+                            (
+                                self._export_command_power_w(action)
+                                if self.battery_system == "sigenergy"
+                                else discharge_power
+                            ),
                         )
                     if not force_result:
                         if self.battery_system == "solaredge":

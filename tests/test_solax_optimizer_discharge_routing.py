@@ -37,6 +37,25 @@ def _load_guard_method():
     return namespace[method.name]
 
 
+def _load_coordinator_method(name: str):
+    tree = ast.parse(COORDINATOR.read_text())
+    class_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "OptimizationCoordinator"
+    )
+    method = next(
+        node
+        for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+    module = ast.Module(body=[method], type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace = {"Any": Any, "_LOGGER": logging.getLogger(__name__)}
+    exec(compile(module, str(COORDINATOR), "exec"), namespace)
+    return namespace[method.name]
+
+
 def _guard_call_keywords() -> list[set[str]]:
     """Return keywords supplied by each optimizer export dispatch call site."""
     tree = ast.parse(COORDINATOR.read_text())
@@ -72,10 +91,14 @@ class _Battery:
         return True
 
 
-def test_optimizer_routes_total_discharge_only_for_solax():
+def test_optimizer_routes_total_discharge_for_adapter_contracts_that_need_it():
     method = _load_guard_method()
 
-    for battery_system, expected_total in (("solax", 3000), ("sungrow", None)):
+    for battery_system, expected_total in (
+        ("solax", 3000),
+        ("sigenergy", 3000),
+        ("sungrow", None),
+    ):
         battery = _Battery()
         coordinator = SimpleNamespace(
             battery_system=battery_system,
@@ -98,6 +121,33 @@ def test_optimizer_routes_total_discharge_only_for_solax():
             assert "battery_discharge_w" not in battery.calls[0]
         else:
             assert battery.calls[0]["battery_discharge_w"] == expected_total
+
+
+def test_sigenergy_optimizer_uses_solved_pcc_ceiling_not_battery_export_value():
+    method = _load_coordinator_method("_sigenergy_grid_export_limit_w")
+    action = SimpleNamespace(timestamp="slot-0", power_w=2478.8)
+    coordinator = SimpleNamespace(
+        _last_optimizer_result=SimpleNamespace(
+            schedule=SimpleNamespace(actions=[action]),
+            grid_export_w=[9999.98],
+        )
+    )
+
+    assert method(coordinator, action) == 9999.98
+
+
+def test_sigenergy_pv_only_export_requests_hardware_refresh_for_battery_target():
+    method = _load_coordinator_method("_force_discharge_hardware_needs_refresh")
+    coordinator = SimpleNamespace(
+        battery_system="sigenergy",
+        _get_energy_data=lambda: {
+            "work_mode_name": "discharge_pv",
+            "battery_power": 0.01,
+            "grid_power": -2.48,
+        },
+    )
+
+    assert method(coordinator, 2478.8) is True
 
 
 def test_solax_total_tracks_a_network_clamped_export_target():
