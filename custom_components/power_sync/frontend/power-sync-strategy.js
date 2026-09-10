@@ -3933,7 +3933,7 @@ class PowerSyncAIPlanExplanation extends HTMLElement {
         initial: 'Checking AI explanation availability…',
         checking_status: 'Checking AI explanation availability…',
         ready: 'Generate a plain-language explanation of the current deterministic plan.',
-        not_configured: 'Add a Gemini or Grok API key under Smart Optimization settings to enable explanations.',
+        not_configured: 'Configure Gemini, Grok, or a local OpenAI-compatible provider under Smart Optimization settings to enable explanations.',
         loading: 'Generating the explanation…',
         unavailable: this._errorText(this._errorCode || 'optimizer_unavailable'),
         error: this._errorText(this._errorCode),

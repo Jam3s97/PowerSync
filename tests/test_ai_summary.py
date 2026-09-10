@@ -37,6 +37,9 @@ def _load_module():
             sys.modules[name] = package
         const = ModuleType("custom_components.power_sync.const")
         const.CONF_OPTIMIZATION_AI_SUMMARY_API_KEY = "optimization_ai_summary_api_key"
+        const.CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH = "optimization_ai_summary_auto_refresh"
+        const.CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT = "optimization_ai_summary_local_endpoint"
+        const.CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL = "optimization_ai_summary_local_model"
         const.CONF_OPTIMIZATION_AI_SUMMARY_PROVIDER = "optimization_ai_summary_provider"
         const.DEFAULT_OPTIMIZATION_AI_SUMMARY_PROVIDER = "gemini"
         sys.modules[const.__name__] = const
@@ -505,6 +508,7 @@ def test_write_only_settings_replace_preserve_clear_and_isolate_provider_key():
         "ai_summary_provider": "grok",
         "ai_summary_key_configured": True,
         "ai_summary_model": "grok-4.5",
+        "ai_summary_auto_refresh": False,
     }
     assert "grok-secret" not in json.dumps(public)
 
@@ -616,6 +620,79 @@ def test_provider_adapters_use_structured_requests_without_key_in_body():
     assert grok_request["headers"]["Authorization"] == "Bearer grok-secret"
     assert grok_request["json"]["response_format"]["json_schema"]["strict"] is True
     assert "grok-secret" not in json.dumps(grok_request["json"])
+
+
+def test_local_openai_endpoint_rules_optional_auth_and_schema_fallback(monkeypatch):
+    module = _load_module()
+    context = module.build_compact_context(_snapshot())
+
+    assert module.normalize_local_endpoint("http://127.0.0.1:3000") == (
+        "http://127.0.0.1:3000/v1/chat/completions"
+    )
+    for unsafe in (
+        "https://user:secret@192.168.1.20/v1",
+        "http://169.254.169.254/v1",
+        "ftp://192.168.1.20/v1",
+        "http://192.168.1.20/not-chat",
+    ):
+        with pytest.raises(module.AISummaryError):
+            module.normalize_local_endpoint(unsafe)
+
+    monkeypatch.setattr(module.socket, "getaddrinfo", lambda *args, **kwargs: [
+        (None, None, None, None, ("127.0.0.1", 0))
+    ])
+
+    class SequenceSession:
+        def __init__(self):
+            self.calls = []
+            self.responses = [
+                _FakeResponse(400, {}),
+                _FakeResponse(200, {"choices": [{"message": {"content": json.dumps(_model_output())}}]}),
+            ]
+
+        def post(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return self.responses.pop(0)
+
+    session = SequenceSession()
+    result = asyncio.run(
+        module.LocalOpenAICompatibleAISummaryProvider().generate(
+            session=session,
+            api_key="",
+            model="local-model",
+            context=context,
+            endpoint="http://127.0.0.1:3000/v1",
+        )
+    )
+    assert result == _model_output()
+    assert len(session.calls) == 2
+    assert "Authorization" not in session.calls[0][1]["headers"]
+    assert session.calls[0][1]["allow_redirects"] is False
+    assert "response_format" in session.calls[0][1]["json"]
+    assert "response_format" not in session.calls[1][1]["json"]
+
+
+def test_local_settings_are_write_only_and_provider_switch_invalidates_values():
+    module = _load_module()
+    options, changes = module.apply_ai_summary_settings(
+        {},
+        {
+            "ai_summary_provider": "local_openai_compatible",
+            "ai_summary_local_endpoint": "http://127.0.0.1:3000",
+            "ai_summary_local_model": "llama-local",
+            "ai_summary_api_key": "local-secret",
+            "ai_summary_auto_refresh": True,
+        },
+    )
+    assert options[module.CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT].endswith("/v1/chat/completions")
+    assert options[module.CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL] == "llama-local"
+    assert options[module.CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH] is True
+    public = module.ai_summary_settings(SimpleNamespace(data={}, options=options))
+    assert "local-secret" not in json.dumps(public)
+    assert "127.0.0.1" not in json.dumps(public)
+    switched, _ = module.apply_ai_summary_settings(options, {"ai_summary_provider": "gemini"})
+    assert module.CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT not in switched
+    assert module.CONF_OPTIMIZATION_AI_SUMMARY_API_KEY not in switched
 
 
 @pytest.mark.parametrize(
@@ -792,6 +869,42 @@ def test_malformed_refresh_keeps_last_valid_summary_as_fallback():
     }
 
 
+def test_auto_refresh_is_material_debounced_coalesced_and_cancelled():
+    module = _load_module()
+    snapshot = _snapshot()
+    module.AUTO_REFRESH_DEBOUNCE_SECONDS = 0
+    module.AUTO_REFRESH_COOLDOWN_SECONDS = 0
+
+    class Adapter:
+        def __init__(self):
+            self.calls = 0
+
+        async def generate(self, **kwargs):
+            self.calls += 1
+            return _model_output()
+
+    adapter = Adapter()
+    module.PROVIDER_ADAPTERS["gemini"] = adapter
+    service = module.AISummaryService(object(), lambda: snapshot)
+
+    async def exercise():
+        service.schedule_auto_refresh(provider="gemini", api_key="key")
+        # An equivalent committed solve must not add a request.
+        service.schedule_auto_refresh(provider="gemini", api_key="key")
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert adapter.calls == 1
+        snapshot["next_actions"][0]["action"] = "idle"
+        service.schedule_auto_refresh(provider="gemini", api_key="key")
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert adapter.calls == 2
+        await service.async_shutdown()
+        assert service._auto_task is None
+
+    asyncio.run(exercise())
+
+
 def test_timeout_status_is_rendered_after_the_ha_card_reloads():
     """A retained provider error must not become a generic ready state on reload."""
     source = (ROOT / "custom_components" / "power_sync" / "frontend" / "power-sync-strategy.js").read_text()
@@ -814,6 +927,8 @@ def test_http_views_register_explicit_generation_and_never_return_key():
     assert 'set(payload) - {"refresh"}' in summary_view
     assert 'api_key=configured_api_key(config_entry)' in summary_view
     assert '"ai_summary_api_key"' not in summary_view
+    assert 'configured_local_endpoint' in summary_view
+    assert 'async_shutdown()' in source
     filter_source = source[
         source.index("class SensitiveDataFilter") : source.index("class CalendarHistoryView")
     ]

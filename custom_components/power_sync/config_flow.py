@@ -557,6 +557,9 @@ from .const import (
     CONF_OPTIMIZATION_AI_SUMMARY_PROVIDER,
     CONF_OPTIMIZATION_AI_SUMMARY_API_KEY,
     CONF_OPTIMIZATION_AI_SUMMARY_CLEAR_API_KEY,
+    CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT,
+    CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL,
+    CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH,
     CONF_OPTIMIZATION_BACKUP_ENERGY_WH,
     CONF_OPTIMIZATION_BACKUP_ENERGY_MAX_POWER_W,
     CONF_OPTIMIZATION_BACKUP_ENERGY_START,
@@ -11660,6 +11663,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             for ai_key in (
                 CONF_OPTIMIZATION_AI_SUMMARY_PROVIDER,
                 CONF_OPTIMIZATION_AI_SUMMARY_API_KEY,
+                CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT,
+                CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL,
+                CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH,
             ):
                 if ai_key not in new_options and ai_key in new_data:
                     new_options[ai_key] = new_data[ai_key]
@@ -11679,10 +11685,22 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                             CONF_OPTIMIZATION_AI_SUMMARY_CLEAR_API_KEY,
                             False,
                         ),
+                        "ai_summary_local_endpoint": user_input.get(
+                            CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, ""
+                        ),
+                        "ai_summary_local_model": user_input.get(
+                            CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, ""
+                        ),
+                        "ai_summary_auto_refresh": user_input.get(
+                            CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH, False
+                        ),
                     },
                 )
                 new_data.pop(CONF_OPTIMIZATION_AI_SUMMARY_PROVIDER, None)
                 new_data.pop(CONF_OPTIMIZATION_AI_SUMMARY_API_KEY, None)
+                new_data.pop(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, None)
+                new_data.pop(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, None)
+                new_data.pop(CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH, None)
             except AISummaryError:
                 return await self._async_step_optimization(
                     None,
@@ -12515,7 +12533,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 ),
             )
         ).strip().lower()
-        if current_ai_provider not in {"gemini", "grok"}:
+        if current_ai_provider not in {"gemini", "grok", "local_openai_compatible"}:
             current_ai_provider = DEFAULT_OPTIMIZATION_AI_SUMMARY_PROVIDER
         current_ai_key_configured = bool(
             str(
@@ -12529,6 +12547,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 or ""
             ).strip()
         )
+        current_ai_local_endpoint = str(self._get_option(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, self.config_entry.data.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, "")) or "")
+        current_ai_local_model = str(self._get_option(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, self.config_entry.data.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, "")) or "")
+        current_ai_auto_refresh = bool(self._get_option(CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH, self.config_entry.data.get(CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH, False)))
 
         current_form_values: dict[str, Any] = {
             CONF_OPTIMIZATION_PROVIDER: current_opt_provider,
@@ -12579,6 +12600,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             CONF_CHARGE_BY_TIME_TARGET_SOC: current_charge_by_time_target_soc,
             CONF_OPTIMIZATION_AI_SUMMARY_PROVIDER: current_ai_provider,
             CONF_OPTIMIZATION_AI_SUMMARY_CLEAR_API_KEY: False,
+            CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT: current_ai_local_endpoint,
+            CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL: current_ai_local_model,
+            CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH: current_ai_auto_refresh,
         }
         if current_load_entity:
             current_form_values[CONF_OPTIMIZATION_LOAD_ENTITY] = current_load_entity
@@ -12659,12 +12683,25 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 options=[
                     SelectOptionDict(value="gemini", label="Gemini"),
                     SelectOptionDict(value="grok", label="Grok"),
+                    SelectOptionDict(value="local_openai_compatible", label="Local OpenAI-compatible (Open WebUI)"),
                 ],
                 mode=SelectSelectorMode.DROPDOWN,
             )),
             vol.Optional(
                 CONF_OPTIMIZATION_AI_SUMMARY_API_KEY,
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+            vol.Optional(
+                CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT,
+                description={"suggested_value": current_ai_local_endpoint} if current_ai_local_endpoint else None,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL,
+                description={"suggested_value": current_ai_local_model} if current_ai_local_model else None,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Required(
+                CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH,
+                default=current_ai_auto_refresh,
+            ): BooleanSelector(),
             vol.Required(
                 CONF_OPTIMIZATION_AI_SUMMARY_CLEAR_API_KEY,
                 default=False,
@@ -12906,6 +12943,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_OPTIMIZATION_AI_SUMMARY_PROVIDER,
                 CONF_OPTIMIZATION_AI_SUMMARY_API_KEY,
                 CONF_OPTIMIZATION_AI_SUMMARY_CLEAR_API_KEY,
+                CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT,
+                CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL,
+                CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH,
             },
         }
         grouped_schema: dict[Any, Any] = {}

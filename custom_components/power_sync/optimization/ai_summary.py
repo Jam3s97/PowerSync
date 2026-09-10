@@ -12,28 +12,39 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import ipaddress
 import json
 import math
+import socket
 from typing import Any, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
 from ..const import (
     CONF_OPTIMIZATION_AI_SUMMARY_API_KEY,
+    CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH,
+    CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT,
+    CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL,
     CONF_OPTIMIZATION_AI_SUMMARY_PROVIDER,
     DEFAULT_OPTIMIZATION_AI_SUMMARY_PROVIDER,
 )
 
-AI_SUMMARY_PROVIDERS = ("gemini", "grok")
+AI_SUMMARY_PROVIDERS = ("gemini", "grok", "local_openai_compatible")
 AI_SUMMARY_MODELS = {
     "gemini": "gemini-3.5-flash-lite",
     "grok": "grok-4.5",
+    "local_openai_compatible": "",
 }
 EXPLAINER_CONTRACT_VERSION = "powersync.optimizer-explainer.v2"
 PROMPT_VERSION = "2"
 SCHEMA_VERSION = "2"
 MAX_CONTEXT_WINDOWS = 24
 MAX_ACTION_EXPLANATIONS = 6
+MAX_LOCAL_ENDPOINT_LENGTH = 512
+MAX_LOCAL_MODEL_LENGTH = 128
+AUTO_REFRESH_DEBOUNCE_SECONDS = 15
+AUTO_REFRESH_COOLDOWN_SECONDS = 300
 
 MODEL_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -151,14 +162,93 @@ class AISummaryProvider(Protocol):
         """Generate a structured explanation without retaining the API key."""
 
 
-def provider_model(provider: str) -> str:
+def normalize_local_endpoint(value: Any) -> str:
+    """Normalize a local OpenAI base URL to its sole chat-completions route.
+
+    This is deliberately conservative: the endpoint is an administrator-set
+    network boundary, so credentials, query injection, redirects, and paths
+    other than the documented OpenAI route are not accepted.
+    """
+    if not isinstance(value, str) or not value.strip() or len(value) > MAX_LOCAL_ENDPOINT_LENGTH:
+        raise AISummaryError("invalid_local_ai_endpoint", "Enter a local OpenAI-compatible base URL or chat-completions endpoint.", http_status=400)
+    parsed = urlsplit(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise AISummaryError("invalid_local_ai_endpoint", "Use an HTTP(S) local OpenAI-compatible URL.", http_status=400)
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        raise AISummaryError("invalid_local_ai_endpoint", "The local AI URL cannot include credentials, a query, or a fragment.", http_status=400)
+    try:
+        port = parsed.port
+    except ValueError as err:
+        raise AISummaryError("invalid_local_ai_endpoint", "The local AI URL has an invalid port.", http_status=400) from err
+    if port is not None and not 1 <= port <= 65535:
+        raise AISummaryError("invalid_local_ai_endpoint", "The local AI URL has an invalid port.", http_status=400)
+    path = parsed.path.rstrip("/")
+    if path in {"", "/v1"}:
+        path = "/v1/chat/completions"
+    elif path != "/v1/chat/completions":
+        raise AISummaryError("invalid_local_ai_endpoint", "The local AI URL must be a base URL or end in /v1/chat/completions.", http_status=400)
+    host = parsed.hostname.lower().rstrip(".")
+    try:
+        literal_address = ipaddress.ip_address(host)
+    except ValueError:
+        literal_address = None
+    if literal_address is not None and not _allowed_local_address(str(literal_address)):
+        raise AISummaryError("unsafe_local_ai_endpoint", "The local AI endpoint must use a private or loopback address.", http_status=400)
+    netloc = host if port is None else f"{host}:{port}"
+    return urlunsplit((parsed.scheme, netloc, path, "", ""))
+
+
+def _allowed_local_address(address: str) -> bool:
+    """Allow only loopback/private local targets; reject metadata and special IPs."""
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if ip.is_multicast or ip.is_unspecified or ip.is_reserved or ip.is_link_local:
+        return False
+    return ip.is_loopback or ip.is_private
+
+
+def resolve_local_endpoint(endpoint: str) -> tuple[str, ...]:
+    """Resolve and validate every address before an outbound local request."""
+    host = urlsplit(endpoint).hostname
+    assert host is not None
+    try:
+        records = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as err:
+        raise AISummaryError("local_ai_endpoint_unavailable", "The local AI endpoint could not be resolved.") from err
+    addresses = tuple(dict.fromkeys(record[4][0] for record in records))
+    if not addresses or any(not _allowed_local_address(address) for address in addresses):
+        raise AISummaryError("unsafe_local_ai_endpoint", "The local AI endpoint must resolve only to a private or loopback address.", http_status=400)
+    return addresses
+
+
+def pin_local_endpoint(endpoint: str, addresses: tuple[str, ...]) -> tuple[str, str, str]:
+    """Return a direct-IP URL plus Host/SNI values for one validated address."""
+    parsed = urlsplit(endpoint)
+    host = parsed.hostname
+    assert host is not None and addresses
+    address = addresses[0]
+    authority = f"[{address}]" if ":" in address else address
+    if parsed.port is not None:
+        authority = f"{authority}:{parsed.port}"
+    host_header = parsed.netloc
+    return urlunsplit((parsed.scheme, authority, parsed.path, "", "")), host_header, host
+
+
+def provider_model(provider: str, local_model: str = "") -> str:
     """Return the backend-owned model for a supported provider."""
     if provider not in AI_SUMMARY_MODELS:
         raise AISummaryError(
             "invalid_ai_provider",
-            "Choose Gemini or Grok for AI plan explanations.",
+            "Choose Gemini, Grok, or a local OpenAI-compatible provider for AI plan explanations.",
             http_status=400,
         )
+    if provider == "local_openai_compatible":
+        model = " ".join(str(local_model or "").split())
+        if not model or len(model) > MAX_LOCAL_MODEL_LENGTH:
+            raise AISummaryError("invalid_local_ai_model", "Enter a local OpenAI-compatible model identifier.", http_status=400)
+        return model
     return AI_SUMMARY_MODELS[provider]
 
 
@@ -181,10 +271,14 @@ def ai_summary_settings(entry: Any | None) -> dict[str, Any]:
         CONF_OPTIMIZATION_AI_SUMMARY_API_KEY,
         data.get(CONF_OPTIMIZATION_AI_SUMMARY_API_KEY),
     )
+    endpoint = options.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, data.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, ""))
+    model = options.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, data.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, ""))
+    local_configured = provider != "local_openai_compatible" or bool(str(endpoint).strip() and str(model).strip())
     return {
         "ai_summary_provider": provider,
-        "ai_summary_key_configured": bool(str(api_key or "").strip()),
-        "ai_summary_model": provider_model(provider),
+        "ai_summary_key_configured": bool(str(api_key or "").strip()) if provider != "local_openai_compatible" else local_configured,
+        "ai_summary_model": provider_model(provider, str(model or "")) if local_configured else "",
+        "ai_summary_auto_refresh": bool(options.get(CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH, data.get(CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH, False))),
     }
 
 
@@ -201,6 +295,23 @@ def configured_api_key(entry: Any | None) -> str:
         )
         or ""
     ).strip()
+
+
+def configured_local_endpoint(entry: Any | None) -> str:
+    """Read a private local endpoint only for the server-side adapter."""
+    if entry is None:
+        return ""
+    data = getattr(entry, "data", {}) or {}
+    options = getattr(entry, "options", {}) or {}
+    return str(options.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, data.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, "")) or "").strip()
+
+
+def configured_local_model(entry: Any | None) -> str:
+    if entry is None:
+        return ""
+    data = getattr(entry, "data", {}) or {}
+    options = getattr(entry, "options", {}) or {}
+    return str(options.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, data.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, "")) or "").strip()
 
 
 def apply_ai_summary_settings(
@@ -222,11 +333,12 @@ def apply_ai_summary_settings(
     if not isinstance(requested_provider, str):
         raise AISummaryError(
             "invalid_ai_provider",
-            "Choose Gemini or Grok for AI plan explanations.",
+            "Choose Gemini, Grok, or a local OpenAI-compatible provider for AI plan explanations.",
             http_status=400,
         )
     requested_provider = requested_provider.strip().lower()
-    provider_model(requested_provider)
+    if requested_provider not in AI_SUMMARY_PROVIDERS:
+        provider_model(requested_provider)
 
     raw_key = payload.get("ai_summary_api_key")
     if raw_key is not None and not isinstance(raw_key, str):
@@ -249,6 +361,16 @@ def apply_ai_summary_settings(
             "Replace or clear the provider key in one request, not both.",
             http_status=400,
         )
+    raw_endpoint = payload.get("ai_summary_local_endpoint")
+    raw_model = payload.get("ai_summary_local_model")
+    auto_refresh = payload.get("ai_summary_auto_refresh", options.get(CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH, False))
+    if not isinstance(auto_refresh, bool):
+        raise AISummaryError("invalid_ai_settings", "Automatic AI explanation refresh must be true or false.", http_status=400)
+    endpoint = normalize_local_endpoint(raw_endpoint) if isinstance(raw_endpoint, str) and raw_endpoint.strip() else str(options.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, "") or "")
+    model = " ".join(str(raw_model).split()) if isinstance(raw_model, str) and raw_model.strip() else str(options.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, "") or "")
+    if requested_provider == "local_openai_compatible":
+        provider_model(requested_provider, model)
+        endpoint = normalize_local_endpoint(endpoint)
     changes: list[str] = []
     if requested_provider != current_provider:
         options[CONF_OPTIMIZATION_AI_SUMMARY_PROVIDER] = requested_provider
@@ -267,6 +389,20 @@ def apply_ai_summary_settings(
         # a replacement leaves the newly selected provider unconfigured.
         if options.pop(CONF_OPTIMIZATION_AI_SUMMARY_API_KEY, None) is not None:
             changes.append("cleared AI summary API key")
+
+    if requested_provider == "local_openai_compatible":
+        if options.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT) != endpoint:
+            options[CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT] = endpoint
+            changes.append("updated local AI endpoint")
+        if options.get(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL) != model:
+            options[CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL] = model
+            changes.append("updated local AI model")
+    elif requested_provider != current_provider:
+        options.pop(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_ENDPOINT, None)
+        options.pop(CONF_OPTIMIZATION_AI_SUMMARY_LOCAL_MODEL, None)
+    if options.get(CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH, False) != auto_refresh:
+        options[CONF_OPTIMIZATION_AI_SUMMARY_AUTO_REFRESH] = auto_refresh
+        changes.append("enabled automatic AI explanation refresh" if auto_refresh else "disabled automatic AI explanation refresh")
 
     return options, changes
 
@@ -1072,6 +1208,7 @@ async def _post_json(
     *,
     headers: Mapping[str, str],
     payload: Mapping[str, Any],
+    request_kwargs: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     try:
         async with session.post(
@@ -1079,6 +1216,8 @@ async def _post_json(
             headers=dict(headers),
             json=dict(payload),
             timeout=aiohttp.ClientTimeout(total=30),
+            allow_redirects=False,
+            **dict(request_kwargs or {}),
         ) as response:
             if response.status < 200 or response.status >= 300:
                 raise _provider_error(response.status)
@@ -1229,9 +1368,76 @@ class GrokAISummaryProvider:
         return _parse_json_text(text)
 
 
+def _openai_message_text(body: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Extract only the simple, bounded OpenAI Chat Completions content form."""
+    choices = body.get("choices")
+    text: Any = None
+    if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+        message = choices[0].get("message")
+        if isinstance(message, Mapping):
+            text = message.get("content")
+    return _parse_json_text(text)
+
+
+class LocalOpenAICompatibleAISummaryProvider:
+    """Conservative OpenAI-compatible adapter for an explicitly local server."""
+
+    async def generate(
+        self,
+        *,
+        session: Any,
+        api_key: str,
+        model: str,
+        context: Mapping[str, Any],
+        endpoint: str,
+    ) -> Mapping[str, Any]:
+        normalized = normalize_local_endpoint(endpoint)
+        # Resolve immediately before each request.  aiohttp follows neither
+        # redirects nor provider-supplied URLs; this validation prevents an
+        # approved hostname from resolving to a metadata/public destination.
+        addresses = resolve_local_endpoint(normalized)
+        pinned_url, host_header, server_hostname = pin_local_endpoint(normalized, addresses)
+        headers = {"Content-Type": "application/json"}
+        headers["Host"] = host_header
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"PLAN_CONTEXT_JSON:\n{canonical_context_json(context)}"},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 1200,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "powersync_ai_plan_summary",
+                    "schema": MODEL_OUTPUT_SCHEMA,
+                    "strict": True,
+                },
+            },
+        }
+        try:
+            return _openai_message_text(await _post_json(session, pinned_url, headers=headers, payload=payload, request_kwargs={"server_hostname": server_hostname}))
+        except AISummaryError as err:
+            # Several local implementations document that they do not support
+            # json_schema.  One retry without it is the sole compatibility
+            # relaxation; strict PowerSync response validation still applies.
+            if err.code != "provider_rejected":
+                raise
+        payload.pop("response_format")
+        # Resolve/pin again for the retry so a hostname cannot rebind between
+        # compatibility attempts.
+        retry_url, retry_host, retry_sni = pin_local_endpoint(normalized, resolve_local_endpoint(normalized))
+        headers["Host"] = retry_host
+        return _openai_message_text(await _post_json(session, retry_url, headers=headers, payload=payload, request_kwargs={"server_hostname": retry_sni}))
+
+
 PROVIDER_ADAPTERS: dict[str, AISummaryProvider] = {
     "gemini": GeminiAISummaryProvider(),
     "grok": GrokAISummaryProvider(),
+    "local_openai_compatible": LocalOpenAICompatibleAISummaryProvider(),
 }
 
 
@@ -1251,12 +1457,80 @@ class AISummaryService:
         self._in_flight: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._last_error: dict[str, str] | None = None
         self._last_explained_context: dict[str, Any] | None = None
+        self._request_lock = asyncio.Lock()
+        self._auto_task: asyncio.Task[None] | None = None
+        self._auto_pending: tuple[str, str, str, str, str] | None = None
+        self._auto_last_material_fingerprint: str | None = None
+        self._auto_last_request_at = 0.0
+        self._generation = 0
 
     def invalidate(self) -> None:
         """Invalidate cached output after provider credential changes."""
         self._cache = None
         self._last_error = None
         self._last_explained_context = None
+        self._generation += 1
+        self._auto_pending = None
+        if self._auto_task is not None and not self._auto_task.done():
+            self._auto_task.cancel()
+
+    async def async_shutdown(self) -> None:
+        """Cancel detached auto work before its entry can be replaced."""
+        self._generation += 1
+        self._auto_pending = None
+        if self._auto_task is not None and not self._auto_task.done():
+            self._auto_task.cancel()
+            await asyncio.gather(self._auto_task, return_exceptions=True)
+        self._auto_task = None
+
+    def schedule_auto_refresh(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        endpoint: str = "",
+        local_model: str = "",
+    ) -> None:
+        """Coalesce detached refreshes after a committed optimizer plan.
+
+        This method intentionally does no I/O and is never awaited by an
+        optimizer or hardware path.  The newest material plan wins while a
+        debounce and cooldown bound local compute use.
+        """
+        try:
+            model = provider_model(provider, local_model)
+            context = build_compact_context(self._snapshot_getter())
+        except AISummaryError:
+            return
+        material = plan_guard_fingerprint(context, provider, model)
+        if material == self._auto_last_material_fingerprint:
+            return
+        self._auto_last_material_fingerprint = material
+        self._auto_pending = (material, provider, api_key, endpoint, local_model)
+        if self._auto_task is None or self._auto_task.done():
+            generation = self._generation
+            self._auto_task = asyncio.create_task(self._run_auto_refresh(generation))
+
+    async def _run_auto_refresh(self, generation: int) -> None:
+        try:
+            while self._auto_pending is not None and generation == self._generation:
+                _material, provider, api_key, endpoint, local_model = self._auto_pending
+                self._auto_pending = None
+                await asyncio.sleep(AUTO_REFRESH_DEBOUNCE_SECONDS)
+                remaining = AUTO_REFRESH_COOLDOWN_SECONDS - (asyncio.get_running_loop().time() - self._auto_last_request_at)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                # A later plan supersedes this one before any provider work.
+                if self._auto_pending is not None or generation != self._generation:
+                    continue
+                self._auto_last_request_at = asyncio.get_running_loop().time()
+                try:
+                    await self.generate(provider=provider, api_key=api_key, refresh=False, endpoint=endpoint, local_model=local_model)
+                except (AISummaryError, asyncio.CancelledError):
+                    if generation != self._generation:
+                        return
+        except asyncio.CancelledError:
+            return
 
     def status(
         self,
@@ -1264,9 +1538,11 @@ class AISummaryService:
         snapshot: Mapping[str, Any],
         provider: str,
         api_key: str,
+        endpoint: str = "",
+        local_model: str = "",
     ) -> dict[str, Any]:
         """Return status/cache metadata without contacting a provider."""
-        if not api_key:
+        if provider != "local_openai_compatible" and not api_key:
             return {
                 "configured": False,
                 "state": "not_configured",
@@ -1274,7 +1550,7 @@ class AISummaryService:
                 "last_error": None,
             }
         try:
-            model = provider_model(provider)
+            model = provider_model(provider, local_model)
             context = build_compact_context(snapshot)
         except AISummaryError as err:
             state = "plan_stale" if err.code == "plan_stale" else "optimizer_unavailable"
@@ -1312,15 +1588,19 @@ class AISummaryService:
         provider: str,
         api_key: str,
         refresh: bool,
+        endpoint: str = "",
+        local_model: str = "",
     ) -> dict[str, Any]:
         """Generate or return a cached explanation after an explicit request."""
-        if not api_key:
+        if provider != "local_openai_compatible" and not api_key:
             raise AISummaryError(
                 "ai_not_configured",
-                "Add a Gemini or Grok API key before generating an explanation.",
+                "Add a provider key before generating an explanation.",
                 http_status=400,
             )
-        model = provider_model(provider)
+        model = provider_model(provider, local_model)
+        if provider == "local_openai_compatible":
+            endpoint = normalize_local_endpoint(endpoint)
         snapshot = self._snapshot_getter()
         context = build_compact_context(snapshot)
         fingerprint = context_fingerprint(context, provider, model)
@@ -1349,6 +1629,7 @@ class AISummaryService:
                     base_context=context,
                     fingerprint=fingerprint,
                     guard_fingerprint=guard_fingerprint,
+                    endpoint=endpoint,
                 )
             )
             self._in_flight[fingerprint] = task
@@ -1380,14 +1661,14 @@ class AISummaryService:
         base_context: Mapping[str, Any],
         fingerprint: str,
         guard_fingerprint: str,
+        endpoint: str = "",
     ) -> dict[str, Any]:
         adapter = PROVIDER_ADAPTERS[provider]
-        raw = await adapter.generate(
-            session=self._session,
-            api_key=api_key,
-            model=model,
-            context=context,
-        )
+        async with self._request_lock:
+            if provider == "local_openai_compatible":
+                raw = await adapter.generate(session=self._session, api_key=api_key, model=model, context=context, endpoint=endpoint)
+            else:
+                raw = await adapter.generate(session=self._session, api_key=api_key, model=model, context=context)
         validated = validate_model_output(raw, list(context["action_windows"]))
 
         current_context = build_compact_context(self._snapshot_getter())

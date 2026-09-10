@@ -43011,6 +43011,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await optimization_coordinator.enable()
 
             hass.data[DOMAIN][entry.entry_id]["optimization_coordinator"] = optimization_coordinator
+            # Create the explanation service now so its post-commit listener
+            # is active even when nobody has opened the dashboard yet.
+            _optimization_ai_service(hass, entry.entry_id, optimization_coordinator)
             _LOGGER.info("Smart Optimization coordinator initialized and enabled")
 
             network_envelope_semantic_fields = (
@@ -43545,6 +43548,29 @@ def _optimization_ai_service(
             opt_coordinator.get_api_data,
         )
         entry_data["_optimization_ai_summary_service"] = service
+        # Coordinator listeners run after committed data is published.  This
+        # callback only queues bounded background work; it is never awaited by
+        # solve, dispatch, or hardware-control code.
+        def _queue_auto_ai_summary() -> None:
+            from .optimization.ai_summary import (
+                ai_summary_settings,
+                configured_api_key,
+                configured_local_endpoint,
+                configured_local_model,
+            )
+            entry = hass.config_entries.async_get_entry(entry_id)
+            settings = ai_summary_settings(entry)
+            if not settings.get("ai_summary_auto_refresh"):
+                return
+            service.schedule_auto_refresh(
+                provider=settings["ai_summary_provider"],
+                api_key=configured_api_key(entry),
+                endpoint=configured_local_endpoint(entry),
+                local_model=configured_local_model(entry),
+            )
+        entry_data["_optimization_ai_summary_auto_unsub"] = (
+            opt_coordinator.async_add_listener(_queue_auto_ai_summary)
+        )
     return service
 
 
@@ -43580,7 +43606,12 @@ class OptimizationView(HomeAssistantView):
             ),
             None,
         )
-        from .optimization.ai_summary import ai_summary_settings, configured_api_key
+        from .optimization.ai_summary import (
+            ai_summary_settings,
+            configured_api_key,
+            configured_local_endpoint,
+            configured_local_model,
+        )
         ai_settings = ai_summary_settings(config_entry)
 
         if not opt_coordinator:
@@ -43615,6 +43646,8 @@ class OptimizationView(HomeAssistantView):
                 snapshot=api_data,
                 provider=ai_settings["ai_summary_provider"],
                 api_key=configured_api_key(config_entry),
+                endpoint=configured_local_endpoint(config_entry),
+                local_model=configured_local_model(config_entry),
             )
         _LOGGER.debug(f"Optimization GET response: enabled={api_data.get('enabled')}, "
                       f"predicted_cost=${api_data.get('predicted_cost', 0):.2f}, "
@@ -44256,6 +44289,9 @@ class OptimizationSettingsView(HomeAssistantView):
                 "ai_summary_provider",
                 "ai_summary_api_key",
                 "clear_ai_summary_api_key",
+                "ai_summary_local_endpoint",
+                "ai_summary_local_model",
+                "ai_summary_auto_refresh",
             }
             if ai_setting_keys.intersection(settings):
                 if config_entry is None:
@@ -44936,6 +44972,8 @@ class OptimizationAISummaryView(HomeAssistantView):
             AISummaryError,
             ai_summary_settings,
             configured_api_key,
+            configured_local_endpoint,
+            configured_local_model,
         )
 
         try:
@@ -45005,6 +45043,8 @@ class OptimizationAISummaryView(HomeAssistantView):
                 provider=public_settings["ai_summary_provider"],
                 api_key=configured_api_key(config_entry),
                 refresh=refresh,
+                endpoint=configured_local_endpoint(config_entry),
+                local_model=configured_local_model(config_entry),
             )
         except AISummaryError as err:
             _LOGGER.warning("AI plan explanation failed: %s", err.code)
@@ -45028,6 +45068,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Tear down TOU sync hooks (AEMO dispatch subscriber + dispatch-trigger
     # coordinator + cron fallback + optional Octopus cron)
     entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+
+    # Fence detached explanation work before unload/reload can replace the
+    # entry. It has no optimizer or hardware side effects, but must not cache
+    # a result under a replacement provider configuration.
+    if isinstance(entry_data, dict):
+        if auto_unsub := entry_data.pop("_optimization_ai_summary_auto_unsub", None):
+            auto_unsub()
+        if ai_service := entry_data.get("_optimization_ai_summary_service"):
+            await ai_service.async_shutdown()
 
     # Let every in-flight Tesla reserve pulse finish its verified exact restore
     # before a replacement setup receives a new lock/generation namespace.

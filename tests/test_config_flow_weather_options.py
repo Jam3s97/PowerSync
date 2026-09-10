@@ -3247,6 +3247,9 @@ def test_smart_optimization_sections_have_local_labels_and_descriptions():
             "optimization_ai_summary_provider",
             "optimization_ai_summary_api_key",
             "optimization_ai_summary_clear_api_key",
+            "optimization_ai_summary_local_endpoint",
+            "optimization_ai_summary_local_model",
+            "optimization_ai_summary_auto_refresh",
         }
         assert "write-only" in ai_section["data_description"][
             "optimization_ai_summary_api_key"
