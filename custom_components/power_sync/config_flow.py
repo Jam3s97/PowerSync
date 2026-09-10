@@ -1908,7 +1908,7 @@ def resolve_goodwe_port(protocol: str, port: int | None) -> int:
 class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for PowerSync."""
 
-    VERSION = 9
+    VERSION = 10
 
     def __init__(self) -> None:
         """Initialize the config flow."""

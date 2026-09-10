@@ -69,8 +69,8 @@ def get_curtailment_price_thresholds(entry: Any) -> tuple[float, float]:
     """Return configured enter/exit thresholds in c/kWh.
 
     The user selects the economic entry boundary. The existing 0.2 c/kWh
-    deadband follows that boundary so changing the entry threshold cannot
-    silently retain the old 1.2 c/kWh release point.
+    deadband follows a non-default boundary so changing a custom entry
+    threshold cannot silently retain an old release point.
     """
     options = getattr(entry, "options", {}) or {}
     data = getattr(entry, "data", {}) or {}
@@ -90,8 +90,16 @@ def export_earnings_are_uneconomic(
     was_active: bool,
     entry: Any,
 ) -> bool:
-    """Apply the configured low-price threshold with hysteresis."""
+    """Return whether export earnings require automatic curtailment.
+
+    The standard zero threshold is intentionally strict: only genuinely
+    negative export earnings curtail, and an active curtailment releases at
+    exactly 0 c/kWh. Existing non-zero user-selected thresholds retain their
+    established hysteresis behavior.
+    """
     enter, exit_ = get_curtailment_price_thresholds(entry)
+    if enter == DEFAULT_CURTAILMENT_EXPORT_THRESHOLD_CENTS:
+        return export_earnings_cents < 0.0
     return with_hysteresis(
         export_earnings_cents,
         was_active,

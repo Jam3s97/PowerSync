@@ -163,7 +163,7 @@ def test_charge_by_time_config_migration_preserves_legacy_profit_max_targets():
     init_source = INIT_PATH.read_text()
     config_flow_source = (ROOT / "custom_components" / "power_sync" / "config_flow.py").read_text()
 
-    assert "VERSION = 9" in config_flow_source
+    assert "VERSION = 10" in config_flow_source
     assert "if config_entry.version == 6:" in init_source
     assert "CONF_CHARGE_BY_TIME_ENABLED" in init_source
     assert "_read_legacy(CONF_PROFIT_MAX_ENABLED, False)" in init_source
@@ -254,6 +254,47 @@ def test_no_idle_v8_to_v9_migration_is_version_scoped():
     assert "if config_entry.version == 8:" in init_source
     assert "_migrate_no_idle_provider_scope_v8(" in init_source
     assert "version=9" in init_source
+
+
+def _curtailment_threshold_v9_migration():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_migrate_curtailment_export_threshold_v9"
+    )
+    namespace: dict[str, Any] = {"Any": Any}
+    exec(
+        compile(ast.Module(body=[function], type_ignores=[]), INIT_PATH, "exec"),
+        namespace,
+    )
+    return namespace["_migrate_curtailment_export_threshold_v9"]
+
+
+def test_curtailment_threshold_v9_to_v10_migration_replaces_legacy_default():
+    migrate = _curtailment_threshold_v9_migration()
+
+    data, options = migrate(
+        {"curtailment_export_threshold_cents": "1.0", "keep": "data"},
+        {"curtailment_export_threshold_cents": 1.0, "keep": "options"},
+    )
+
+    assert data == {"curtailment_export_threshold_cents": 0.0, "keep": "data"}
+    assert options == {"curtailment_export_threshold_cents": 0.0, "keep": "options"}
+
+
+def test_curtailment_threshold_v9_to_v10_migration_preserves_custom_values():
+    migrate = _curtailment_threshold_v9_migration()
+
+    data, options = migrate(
+        {"curtailment_export_threshold_cents": -0.5},
+        {"curtailment_export_threshold_cents": 2.5},
+    )
+
+    assert data["curtailment_export_threshold_cents"] == -0.5
+    assert options["curtailment_export_threshold_cents"] == 2.5
 
 
 def test_auto_apply_reserve_setting_is_exposed_through_api_and_coordinator():

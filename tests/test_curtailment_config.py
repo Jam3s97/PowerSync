@@ -30,20 +30,28 @@ def _entry(*, options=None, data=None):
     return SimpleNamespace(options=options or {}, data=data or {})
 
 
-def test_curtailment_threshold_defaults_preserve_one_cent_behavior():
+def test_curtailment_threshold_defaults_require_genuinely_negative_earnings():
     enter, exit_ = get_curtailment_price_thresholds(_entry())
 
-    assert enter == DEFAULT_CURTAILMENT_EXPORT_THRESHOLD_CENTS == 1.0
-    assert exit_ == enter + CURTAILMENT_HYSTERESIS_CENTS == 1.2
+    assert enter == DEFAULT_CURTAILMENT_EXPORT_THRESHOLD_CENTS == 0.0
+    assert exit_ == enter + CURTAILMENT_HYSTERESIS_CENTS == 0.2
 
 
-def test_zero_threshold_enters_only_below_zero_and_exits_at_deadband():
-    entry = _entry(options={"curtailment_export_threshold_cents": 0})
+def test_standard_zero_threshold_is_strict_at_the_zero_boundary():
+    entry = _entry()
 
-    assert export_earnings_are_uneconomic(0.1, False, entry) is False
     assert export_earnings_are_uneconomic(-0.1, False, entry) is True
-    assert export_earnings_are_uneconomic(0.1, True, entry) is True
-    assert export_earnings_are_uneconomic(0.2, True, entry) is False
+    assert export_earnings_are_uneconomic(0.0, False, entry) is False
+    assert export_earnings_are_uneconomic(0.0, True, entry) is False
+    assert export_earnings_are_uneconomic(0.1, True, entry) is False
+
+
+def test_explicit_non_default_threshold_retains_hysteresis():
+    entry = _entry(options={"curtailment_export_threshold_cents": 1.0})
+
+    assert export_earnings_are_uneconomic(0.9, False, entry) is True
+    assert export_earnings_are_uneconomic(1.1, True, entry) is True
+    assert export_earnings_are_uneconomic(1.2, True, entry) is False
 
 
 def test_options_override_legacy_data_and_invalid_values_fall_back():
@@ -57,4 +65,4 @@ def test_options_override_legacy_data_and_invalid_values_fall_back():
 
     assert get_curtailment_price_thresholds(
         _entry(options={"curtailment_export_threshold_cents": "not-a-number"})
-    ) == (1.0, 1.2)
+    ) == (0.0, 0.2)

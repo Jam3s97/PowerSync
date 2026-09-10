@@ -4,9 +4,9 @@ Both bugs are the same class -- a stateless `current >= threshold` (or `<`)
 comparison flaps active/inactive on every poll when the live value hovers
 right at the decision boundary:
 
-- HD-15: `should_curtail_ac_coupled` (__init__.py) curtails AC-coupled solar
-  when export earnings drop below 1c/kWh; a price sitting at ~1c flaps
-  curtail/restore every WebSocket tick.
+- HD-15: `should_curtail_ac_coupled` (__init__.py) preserves hysteresis for
+  explicit custom curtailment thresholds, so a price at that boundary does
+  not flap curtail/restore every WebSocket tick.
 - HD-24: `check_price_spike` (aemo_api.py) flags an AEMO spike at
   `current_price >= threshold`; a dispatch price sitting at the threshold
   flaps enter/exit on every 5-min AEMO poll.
@@ -49,13 +49,19 @@ def _load_tariff_utils():
 
 
 def _configured_curtailment(with_hysteresis):
-    """Build the default-policy adapter used by extracted nested functions."""
-    return lambda value, was_active, entry: with_hysteresis(
-        value,
-        was_active,
-        enter_threshold=entry.options.get("curtailment_export_threshold_cents", 1.0),
-        exit_threshold=entry.options.get("curtailment_export_threshold_cents", 1.0) + 0.2,
-    )
+    """Build the shared curtailment policy used by extracted functions."""
+    def policy(value, was_active, entry):
+        threshold = entry.options.get("curtailment_export_threshold_cents", 0.0)
+        if threshold == 0.0:
+            return value < 0.0
+        return with_hysteresis(
+            value,
+            was_active,
+            enter_threshold=threshold,
+            exit_threshold=threshold + 0.2,
+        )
+
+    return policy
 
 
 def _nested_function_source(name: str) -> str:
@@ -86,7 +92,11 @@ def _build_should_curtail_ac_coupled(
             debug=lambda *a, **k: None,
             info=lambda *a, **k: None,
         ),
-        "entry": SimpleNamespace(options={}, data={}, entry_id="test_entry"),
+        "entry": SimpleNamespace(
+            options={"curtailment_export_threshold_cents": 1.0},
+            data={},
+            entry_id="test_entry",
+        ),
         "get_live_status": get_live_status,
         "hass": SimpleNamespace(data={}),
         "DOMAIN": "power_sync",
@@ -162,8 +172,8 @@ def test_with_hysteresis_active_when_low_enter_and_exit():
 # HD-15: should_curtail_ac_coupled
 # ---------------------------------------------------------------------------
 
-def test_ac_curtail_no_flap_while_export_earnings_hovers_at_boundary():
-    """A price hovering just above/below the 1c/kWh boundary must not flap
+def test_ac_curtail_no_flap_while_custom_export_earnings_hovers_at_boundary():
+    """A price hovering around a custom 1c/kWh boundary must not flap
     the curtail decision every tick -- only decisive crossings should."""
 
     async def get_live_status():
@@ -188,7 +198,7 @@ def test_ac_curtail_no_flap_while_export_earnings_hovers_at_boundary():
 
     results = asyncio.run(run())
 
-    # Clean entry at 0.9c (< 1.0c enter threshold).
+    # Clean entry at 0.9c (< custom 1.0c enter threshold).
     assert results[0] is True
     # 1.05c and 0.95c both sit inside the 1.0-1.2c dead zone -- must NOT flap
     # away from the active (curtailing) decision.
@@ -296,10 +306,9 @@ def test_aemo_spike_no_flap_while_price_hovers_at_boundary(monkeypatch):
 # ---------------------------------------------------------------------------
 # should_curtail_ac_coupled was fixed for the same boundary-flap disease in
 # 5a50030f (HD-15), but the 9 brand-native/AC-inverter curtailment handlers
-# below still compared the raw `export_earnings < 1` statelessly. Each now
-# threads its own with_hysteresis-gated `export_uneconomic` decision through
-# entry_data so a price hovering at ~1c/kWh doesn't flap curtail/restore on
-# every poll or WebSocket tick.
+# below route through the shared predicate and preserve per-handler decision
+# state, so a custom threshold does not flap curtail/restore on every poll or
+# WebSocket tick.
 
 
 def _build_handle_ac_inverter_curtailment_only(with_hysteresis):
@@ -310,7 +319,11 @@ def _build_handle_ac_inverter_curtailment_only(with_hysteresis):
         calls.append(curtail)
 
     hass = SimpleNamespace(data={"power_sync": {"test_entry": {}}})
-    entry = SimpleNamespace(options={}, data={}, entry_id="test_entry")
+    entry = SimpleNamespace(
+        options={"curtailment_export_threshold_cents": 1.0},
+        data={},
+        entry_id="test_entry",
+    )
     namespace = {
         "hass": hass,
         "DOMAIN": "power_sync",
@@ -392,7 +405,11 @@ def _build_handle_foxess_curtailment(
     hass = SimpleNamespace(
         data={"power_sync": {"test_entry": entry_data}}
     )
-    entry = SimpleNamespace(options={}, data={}, entry_id="test_entry")
+    entry = SimpleNamespace(
+        options={"curtailment_export_threshold_cents": 1.0},
+        data={},
+        entry_id="test_entry",
+    )
     namespace = {
         "hass": hass,
         "DOMAIN": "power_sync",
@@ -739,8 +756,7 @@ def test_foxess_reapply_interval_lands_ahead_of_the_remote_control_timeout():
 
 def test_brand_curtailment_handlers_use_hysteresis_not_raw_boundary():
     """Source-level guard: every HD-25 handler must route its curtail decision
-    through with_hysteresis (own entry_data key) instead of the raw
-    `export_earnings < 1` comparison the flap bug used."""
+    through the shared predicate instead of a raw price comparison."""
 
     handler_keys = {
         "handle_foxess_curtailment": "foxess_curtail_export_uneconomic",

@@ -66,7 +66,7 @@ During initial setup, select **AlphaESS** as your battery system and enter:
 
 ### 3. DC curtailment toggle
 
-The **Enable DC curtailment** toggle activates zero-export curtailment. When enabled, PowerSync monitors feed-in prices and writes 0% to the AlphaESS export-limit register (0x0800) when export is uneconomical (feed-in price below 1 c/kWh). It restores normal export when prices recover.
+The **Enable DC curtailment** toggle activates zero-export curtailment. When enabled, PowerSync monitors feed-in prices and writes 0% to the AlphaESS export-limit register (0x0800) when export earnings are genuinely negative. It does not automatically curtail at exactly 0 c/kWh, and restores normal export when prices recover.
 
 **This toggle has no effect unless Modbus curtailment is enabled in the inverter firmware first** (see [Prerequisites](#prerequisites)).
 

@@ -2393,7 +2393,7 @@
       },
       "curtailment_options": {
         "title": "Curtailment settings",
-        "description": "Configure automatic curtailment and choose the export earnings threshold. Changes take effect immediately.",
+        "description": "Configure automatic curtailment. By default, it begins only when export earnings are negative; earnings of 0 c/kWh are not curtailed. Changes take effect immediately.",
         "data": {
           "battery_curtailment_enabled": "Enable battery export curtailment",
           "ac_inverter_curtailment_enabled": "Enable separate AC-coupled inverter shutdown",
@@ -2404,12 +2404,12 @@
           "openweathermap_api_key": "OpenWeatherMap API key"
         },
         "data_description": {
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold. This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in.",
-          "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold. Do not enable this for the hybrid battery inverter already configured as the battery system.",
-          "curtailment_export_threshold_cents": "Curtail when export earnings are below this value. Set 0 to curtail only at negative export earnings. A 0.2c/kWh release deadband prevents rapid switching.",
+          "battery_curtailment_enabled": "Stop battery export when earnings are negative by default. This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in.",
+          "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings are negative by default. Do not enable this for the hybrid battery inverter already configured as the battery system.",
+          "curtailment_export_threshold_cents": "The normal automatic trigger is below 0 c/kWh; export at exactly 0 c/kWh is not curtailed. A non-zero custom threshold retains a 0.2c/kWh release deadband.",
           "curtailment_control_in_monitoring_mode": "When explicitly enabled, automatic curtail and restore commands may run while Monitoring Mode continues to block every unrelated battery, EV, and inverter dispatch command. Curtailment can change solar output or inverter export settings.",
           "powerwall_offgrid_as_curtailment": "Allow PowerSync to temporarily island the Powerwall when export curtailment is needed but no AC inverter curtailment path is configured or available.",
-          "sigenergy_dc_curtailment_enabled": "Reduce DC solar output when export earnings drop below the configured threshold. Requires Modbus write access to the Sigenergy system.",
+          "sigenergy_dc_curtailment_enabled": "Reduce DC solar output when export earnings are negative by default. Requires Modbus write access to the Sigenergy system.",
           "openweathermap_api_key": "Free API key from openweathermap.org for weather-based automations (sunny, cloudy, rain, snow, and storm triggers). Leave blank to disable."
         },
         "submit": "Save"
